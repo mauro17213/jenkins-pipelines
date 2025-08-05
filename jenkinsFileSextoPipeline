@@ -1,0 +1,31 @@
+pipeline {
+    agent any
+    environment{
+        INSTAGRAM ="MAURO"
+    }
+    stages {
+        stage('Episodio Uno') {
+            steps {
+                echo 'hola'
+            }
+        }
+        stage("saludo dos"){
+            steps{
+                echo "saludo 2.1"
+                echo "saludo 2.2"
+            }
+        }
+        stage("imprimir"){
+            steps{
+                echo "$INSTAGRAM"
+                sh "echo '$INSTAGRAM'"
+            }
+        }
+        stage("imprimir variable del sIstemA"){
+            steps{
+                sh """echo $Numero """
+                echo "$Numero"
+            }
+        }
+    }
+}
