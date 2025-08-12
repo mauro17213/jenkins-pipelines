@@ -1,22 +1,22 @@
 pipeline {
     agent any
 
+    // Ejecuta el pipeline cuando GitHub envíe un webhook
     triggers {
-        // Escucha cambios desde GitHub mediante Webhook
         githubPush()
     }
 
     stages {
         stage('Checkout') {
             steps {
-                echo "Obteniendo código desde GitHub..."
+                echo "📥 Obteniendo código desde GitHub..."
                 checkout scm
             }
         }
 
         stage('Build') {
             steps {
-                echo "Generando artefacto ZIP..."
+                echo "📦 Generando artefacto ZIP..."
                 powershell '''
                     $zipPath = "artefacto.zip"
                     if (Test-Path $zipPath) { Remove-Item $zipPath }
@@ -27,7 +27,7 @@ pipeline {
 
         stage('Archive') {
             steps {
-                echo "Guardando artefacto en Jenkins..."
+                echo "💾 Guardando artefacto en Jenkins..."
                 archiveArtifacts artifacts: 'artefacto.zip', fingerprint: true
             }
         }
