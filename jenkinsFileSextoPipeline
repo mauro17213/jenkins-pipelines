@@ -17,21 +17,19 @@ pipeline {
         stage('Build') {
             steps {
                 echo "Generando artefacto ZIP..."
-                // Elimina artefactos antiguos
-                sh 'rm -f artefacto.zip'
-
-                // Empaqueta todo el proyecto en ZIP
-                sh 'zip -r artefacto.zip ./*'
+                powershell '''
+                    $zipPath = "artefacto.zip"
+                    if (Test-Path $zipPath) { Remove-Item $zipPath }
+                    Compress-Archive -Path * -DestinationPath $zipPath -Force
+                '''
             }
         }
 
         stage('Archive') {
             steps {
                 echo "Guardando artefacto en Jenkins..."
-                // Guarda el ZIP como artefacto del job
                 archiveArtifacts artifacts: 'artefacto.zip', fingerprint: true
             }
         }
     }
 }
-
