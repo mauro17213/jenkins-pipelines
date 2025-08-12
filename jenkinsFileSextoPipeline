@@ -1,22 +1,35 @@
 pipeline {
     agent any
 
+    triggers {
+        // Escucha cambios desde GitHub mediante Webhook
+        githubPush()
+    }
+
     stages {
+        stage('Checkout') {
+            steps {
+                echo "Obteniendo código desde GitHub..."
+                checkout scm
+            }
+        }
+
         stage('Build') {
             steps {
-                echo 'hola'
+                echo "Generando artefacto ZIP..."
+                // Elimina artefactos antiguos
+                sh 'rm -f artefacto.zip'
+
+                // Empaqueta todo el proyecto en ZIP
+                sh 'zip -r artefacto.zip ./*'
             }
         }
 
-        stage("Tests") {
+        stage('Archive') {
             steps {
-                echo "hola 2.1"
-            }
-        }
-
-        stage("Deploy") {
-            steps {
-                sh "docker-compose down -v"
+                echo "Guardando artefacto en Jenkins..."
+                // Guarda el ZIP como artefacto del job
+                archiveArtifacts artifacts: 'artefacto.zip', fingerprint: true
             }
         }
     }
