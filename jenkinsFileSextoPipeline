@@ -1,4 +1,3 @@
-estoy trabajando con jenkins, para que sirve este pipeline 
 pipeline {
     agent any
 
