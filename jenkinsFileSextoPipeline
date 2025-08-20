@@ -1,9 +1,14 @@
 pipeline {
     agent { label 'windows' }   
 
-    // Ejecuta el pipeline cuando GitHub envíe un webhook
     triggers {
         githubPush()
+    }
+
+    tools {
+        // Maven debe estar configurado en Jenkins (Global Tool Configuration)
+        maven 'MAVEN_HOME'
+        jdk 'JDK11'   // o la versión que uses en WildFly
     }
 
     stages {
@@ -16,19 +21,23 @@ pipeline {
 
         stage('Build') {
             steps {
-                echo "📦 Generando artefacto ZIP..."
-                powershell '''
-                    $zipPath = "artefacto.zip"
-                    if (Test-Path $zipPath) { Remove-Item $zipPath }
-                    Compress-Archive -Path * -DestinationPath $zipPath -Force
-                '''
+                echo "🔨 Compilando y empaquetando con Maven..."
+                bat 'mvn clean package -DskipTests'
             }
         }
 
         stage('Archive') {
             steps {
                 echo "💾 Guardando artefacto en Jenkins..."
-                archiveArtifacts artifacts: 'artefacto.zip', fingerprint: true
+                archiveArtifacts artifacts: 'target/*.war', fingerprint: true
+            }
+        }
+
+        stage('Deploy to WildFly') {
+            steps {
+                echo "🚀 Desplegando en WildFly..."
+                // Copia el WAR al directorio de despliegue de WildFly
+                bat 'copy target\\*.war C:\\wildfly-9.1.0.Final\\standalone\\deployments\\'
             }
         }
     }
