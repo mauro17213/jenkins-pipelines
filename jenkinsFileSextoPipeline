@@ -7,7 +7,7 @@ pipeline {
 
     tools {
         // Maven debe estar configurado en Jenkins (Global Tool Configuration)
-        maven 'MAVEN_HOME'
+        maven 'Maven_3.9.3'
         jdk 'JDK11'   // o la versión que uses en WildFly
     }
 
