@@ -1,13 +1,13 @@
 pipeline {
-  agent { label 'Windows' }  // o el label real de tu agente
+  agent { label 'Windows' }   // usa el label real de tu nodo
 
   tools {
-    jdk   'jdk11'           
-    maven 'Maven'   
+    jdk   'jdk11'            
+    maven 'Maven_3.9.3'      
   }
 
   parameters {
-    booleanParam(name: 'USE_DOCKER_DB', defaultValue: true,  description: 'Levantar MySQL en Docker para pruebas')
+    booleanParam(name: 'USE_DOCKER_DB',    defaultValue: true,  description: 'Levantar MySQL en Docker para pruebas')
     booleanParam(name: 'DEPLOY_TO_WILDFLY', defaultValue: false, description: 'Desplegar al finalizar')
   }
 
@@ -15,7 +15,7 @@ pipeline {
     MAVEN_OPTS   = '-Dmaven.wagon.http.pool=false -Djava.awt.headless=true'
     WF_HOST      = 'localhost'
     WF_PORT      = '9990'
-    WILDFLY_HOME = 'C:\\wildfly-19.1.0.Final'   L
+    WILDFLY_HOME = 'C:\\wildfly-19.1.0.Final'   // carpeta, no XML (puedes usar slashes)
     MYSQL_SERVICE = 'MySQL80'
   }
 
@@ -32,6 +32,7 @@ pipeline {
     stage('Database (MySQL)') {
       when { expression { return params.USE_DOCKER_DB } }
       steps {
+        // Levanta MySQL 8 en Docker si no existe / detenido
         bat '''
           docker ps -a --format "{{.Names}}" | findstr /I "^ci-mysql$" >nul && (
             docker start ci-mysql
@@ -43,7 +44,7 @@ pipeline {
     }
 
     stage('Build savia-ejb') {
-      steps { dir('savia-ejb') { bat 'mvn -B -U clean install -DskipTests' } }
+      steps { dir('savia-ejb')     { bat 'mvn -B -U clean install -DskipTests' } }
     }
 
     stage('Build savia-negocio') {
@@ -51,11 +52,11 @@ pipeline {
     }
 
     stage('Build savia-web') {
-      steps { dir('savia-web') { bat 'mvn -B -U clean install -DskipTests' } }
+      steps { dir('savia-web')     { bat 'mvn -B -U clean install -DskipTests' } }
     }
 
     stage('Package savia-ear') {
-      steps { dir('savia-ear') { bat 'mvn -B -U clean package -DskipTests' } }
+      steps { dir('savia-ear')     { bat 'mvn -B -U clean package -DskipTests' } }
     }
 
     stage('Run Tests (all)') {
@@ -94,7 +95,7 @@ pipeline {
     failure { echo '? Pipeline FAILED' }
     always {
       script {
-        if (params.USE_DOCKER_DB) {
+        if (params.USE_DOCKER_DB && env.WORKSPACE) {
           bat 'docker ps --format "{{.Names}}" | findstr /I "^ci-mysql$" >nul && docker stop ci-mysql'
         }
       }
