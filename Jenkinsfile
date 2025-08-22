@@ -3,7 +3,7 @@ pipeline {
 
   tools {
     jdk   'jdk11'            
-    maven 'Maven_3.9.3'      
+    maven 'Maven'      
   }
 
   parameters {
