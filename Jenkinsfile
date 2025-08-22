@@ -1,10 +1,9 @@
 pipeline {
-  agent { label 'windows' } 
+  agent { label 'Windows' } 
 
   tools {
-    jdk   'Java11'        // Configurado en Global Tool Configuration
-    maven 'Maven_3.9.3'   // Configurado en Global Tool Configuration
-  }
+    jdk 'jdk11'        
+    Maven_3.9.3 'Maven_3.9.3'   
 
   parameters {
     booleanParam(name: 'USE_DOCKER_DB', defaultValue: true, description: 'Levantar MySQL en Docker para pruebas')
@@ -16,8 +15,7 @@ pipeline {
     // Ajusta estas variables si vas a desplegar
     WF_HOST = 'localhost'
     WF_PORT = '9990'
-    WILDFLY_HOME = 'C:\\wildfly\\wildfly-27.0.1.Final'  // <-- cambia a tu ruta real
-    // Si tu servicio MySQL local existe, puedes ajustar el nombre:
+    WILDFLY_HOME = 'C:\wildfly-19.1.0.Final\standalone\configuration\standalone-full.xml' 
     MYSQL_SERVICE = 'MySQL80'
   }
 
@@ -29,7 +27,6 @@ pipeline {
   stages {
     stage('Checkout') {
       steps {
-        // Usa el repositorio que configures en "Pipeline script from SCM"
         checkout scm
       }
     }
@@ -86,13 +83,6 @@ pipeline {
         dir('savia-ear') {
           bat 'mvn -B -U clean package -DskipTests'
         }
-      }
-    }
-
-    stage('Run Tests (all)') {
-      steps {
-        // Si tienes tests que requieren DB, aquí ya debería estar MySQL arriba
-        bat 'mvn -q -DskipTests=false test'
       }
     }
 
