@@ -34,10 +34,10 @@ pipeline {
     stage('Build all modules') {
       steps {
         bat '''
-          cd savia-ejb     && mvn -B -U clean install  -DskipTests && cd ..
-          cd savia-negocio && mvn -B -U clean install  -DskipTests && cd ..
-          cd savia-web     && mvn -B -U clean install  -DskipTests && cd ..
-          cd savia-ear     && mvn -B -U clean package  -DskipTests && cd ..
+          bat 'cd savia-negocio && mvn -B -U -DskipTests clean install -Dmaven.repo.local=%WORKSPACE%\\.m2 && cd ..'
+          bat 'cd savia-ejb     && mvn -B -U -DskipTests clean install -Dmaven.repo.local=%WORKSPACE%\\.m2 && cd ..'
+          bat 'cd savia-ear     && mvn -B -U -DskipTests clean package -Dmaven.repo.local=%WORKSPACE%\\.m2 && cd ..'
+          bat 'cd savia-web     && mvn -B -U -DskipTests clean install -Dmaven.repo.local=%WORKSPACE%\\.m2 && cd ..'
         '''
       }
     }
