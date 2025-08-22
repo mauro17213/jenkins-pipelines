@@ -5,7 +5,7 @@
 package com.saviasaludeps.savia.ejb.entidades;
 
 import java.io.Serializable;
-import java.util.Date;
+ import java.util.Date;
 import javax.persistence.Basic;
 import javax.persistence.Column;
 import javax.persistence.Entity;
