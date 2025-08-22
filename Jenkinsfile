@@ -1,13 +1,13 @@
 pipeline {
-  agent { label 'Windows' }   // usa el label real de tu nodo
+  agent { label 'Windows' }   // usa el label real
 
   tools {
-    jdk   'jdk11'            
-    maven 'Maven'      
+    jdk   'jdk11'             // nombres EXACTOS en Global Tool Configuration
+    maven 'Maven'
   }
 
   parameters {
-    booleanParam(name: 'USE_DOCKER_DB',    defaultValue: true,  description: 'Levantar MySQL en Docker para pruebas')
+    booleanParam(name: 'USE_DOCKER_DB',     defaultValue: true,  description: 'Levantar MySQL en Docker para pruebas')
     booleanParam(name: 'DEPLOY_TO_WILDFLY', defaultValue: false, description: 'Desplegar al finalizar')
   }
 
@@ -15,7 +15,7 @@ pipeline {
     MAVEN_OPTS   = '-Dmaven.wagon.http.pool=false -Djava.awt.headless=true'
     WF_HOST      = 'localhost'
     WF_PORT      = '9990'
-    WILDFLY_HOME = 'C:\\wildfly-19.1.0.Final'   // carpeta, no XML (puedes usar slashes)
+    WILDFLY_HOME = 'C:\\wildfly-19.1.0.Final'
     MYSQL_SERVICE = 'MySQL80'
   }
 
@@ -32,7 +32,6 @@ pipeline {
     stage('Database (MySQL)') {
       when { expression { return params.USE_DOCKER_DB } }
       steps {
-        // Levanta MySQL 8 en Docker si no existe / detenido
         bat '''
           docker ps -a --format "{{.Names}}" | findstr /I "^ci-mysql$" >nul && (
             docker start ci-mysql
@@ -43,29 +42,37 @@ pipeline {
       }
     }
 
-    stage('Build savia-ejb') {
-      steps { dir('savia-ejb')     { bat 'mvn -B -U clean install -DskipTests' } }
-    }
-
-    stage('Build savia-negocio') {
-      steps { dir('savia-negocio') { bat 'mvn -B -U clean install -DskipTests' } }
-    }
-
-    stage('Build savia-web') {
-      steps { dir('savia-web')     { bat 'mvn -B -U clean install -DskipTests' } }
-    }
-
-    stage('Package savia-ear') {
-      steps { dir('savia-ear')     { bat 'mvn -B -U clean package -DskipTests' } }
-    }
+    stage('Build savia-ejb')       { steps { dir('savia-ejb')     { bat 'mvn -B -U clean install -DskipTests' } } }
+    stage('Build savia-negocio')   { steps { dir('savia-negocio') { bat 'mvn -B -U clean install -DskipTests' } } }
+    stage('Build savia-web')       { steps { dir('savia-web')     { bat 'mvn -B -U clean install -DskipTests' } } }
+    stage('Package savia-ear')     { steps { dir('savia-ear')     { bat 'mvn -B -U clean package -DskipTests' } } }
 
     stage('Run Tests (all)') {
       steps { bat 'mvn -q -DskipTests=false test' }
     }
 
+    // ?? NUEVA ETAPA: crea un único ZIP con lo compilado de los 4 módulos
+    stage('Zip compiled modules') {
+      steps {
+        // Limpia zip anterior, arma dist/ con target de cada módulo y comprime
+        bat '''
+          if exist build_compiled_all.zip del /F /Q build_compiled_all.zip
+          powershell -NoProfile -Command ^
+            "Remove-Item -Recurse -Force dist -ErrorAction SilentlyContinue; ^
+             New-Item -ItemType Directory -Force dist\\savia-ejb,dist\\savia-negocio,dist\\savia-web,dist\\savia-ear | Out-Null; ^
+             Copy-Item -Recurse -Force 'savia-ejb\\target\\*'     'dist\\savia-ejb\\target'     -ErrorAction SilentlyContinue; ^
+             Copy-Item -Recurse -Force 'savia-negocio\\target\\*' 'dist\\savia-negocio\\target' -ErrorAction SilentlyContinue; ^
+             Copy-Item -Recurse -Force 'savia-web\\target\\*'     'dist\\savia-web\\target'     -ErrorAction SilentlyContinue; ^
+             Copy-Item -Recurse -Force 'savia-ear\\target\\*'     'dist\\savia-ear\\target'     -ErrorAction SilentlyContinue; ^
+             Compress-Archive -Path 'dist\\*' -DestinationPath 'build_compiled_all.zip' -Force"
+        '''
+      }
+    }
+
     stage('Archive Artifacts') {
       steps {
-        archiveArtifacts artifacts: 'savia-ear/target/*.ear, savia-web/target/*.war', fingerprint: true
+        // Publica el ZIP único + los artefactos finales como antes
+        archiveArtifacts artifacts: 'build_compiled_all.zip, savia-ear/target/*.ear, savia-web/target/*.war', fingerprint: true
         junit allowEmptyResults: true, testResults: '**/target/surefire-reports/*.xml'
       }
     }
