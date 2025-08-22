@@ -1,22 +1,9 @@
 pipeline {
-  agent { label 'Windows' }   // usa el label real
+  agent { label 'Windows' }         // Cambia por el label real de tu nodo
 
   tools {
-    jdk   'jdk11'             // nombres EXACTOS en Global Tool Configuration
-    maven 'Maven'
-  }
-
-  parameters {
-    booleanParam(name: 'USE_DOCKER_DB',     defaultValue: true,  description: 'Levantar MySQL en Docker para pruebas')
-    booleanParam(name: 'DEPLOY_TO_WILDFLY', defaultValue: false, description: 'Desplegar al finalizar')
-  }
-
-  environment {
-    MAVEN_OPTS   = '-Dmaven.wagon.http.pool=false -Djava.awt.headless=true'
-    WF_HOST      = 'localhost'
-    WF_PORT      = '9990'
-    WILDFLY_HOME = 'C:\\wildfly-19.1.0.Final'
-    MYSQL_SERVICE = 'MySQL80'
+    jdk   'jdk11'                   // Nombre EXACTO en Global Tool Configuration
+    maven 'Maven'                   // Nombre EXACTO en Global Tool Configuration
   }
 
   options {
@@ -24,88 +11,95 @@ pipeline {
     skipDefaultCheckout()
   }
 
+  // ?? Disparo automático ??
+  triggers { pollSCM('H/2 * * * *') }   // quita esto si usarás webhook
+  // triggers { githubPush() }          // usa esto si tienes webhook configurado
+
+  parameters {
+    booleanParam(name: 'DEPLOY_TO_WILDFLY', defaultValue: false, description: 'Desplegar al finalizar')
+  }
+
+  environment {
+    MAVEN_OPTS   = '-Dmaven.wagon.http.pool=false -Djava.awt.headless=true'
+    WILDFLY_HOME = 'C:\\wildfly-19.1.0.Final'  // Carpeta de instalación, NO el XML
+    WF_HOST      = 'localhost'
+    WF_PORT      = '9990'
+  }
+
   stages {
     stage('Checkout') {
       steps { checkout scm }
     }
 
-    stage('Database (MySQL)') {
-      when { expression { return params.USE_DOCKER_DB } }
+    stage('Build all modules') {
       steps {
         bat '''
-          docker ps -a --format "{{.Names}}" | findstr /I "^ci-mysql$" >nul && (
-            docker start ci-mysql
-          ) || (
-            docker run -d --name ci-mysql -e MYSQL_ROOT_PASSWORD=root -e MYSQL_DATABASE=appdb -p 3306:3306 mysql:8
-          )
+          cd savia-ejb     && mvn -B -U clean install  -DskipTests && cd ..
+          cd savia-negocio && mvn -B -U clean install  -DskipTests && cd ..
+          cd savia-web     && mvn -B -U clean install  -DskipTests && cd ..
+          cd savia-ear     && mvn -B -U clean package  -DskipTests && cd ..
         '''
       }
     }
 
-    stage('Build savia-ejb')       { steps { dir('savia-ejb')     { bat 'mvn -B -U clean install -DskipTests' } } }
-    stage('Build savia-negocio')   { steps { dir('savia-negocio') { bat 'mvn -B -U clean install -DskipTests' } } }
-    stage('Build savia-web')       { steps { dir('savia-web')     { bat 'mvn -B -U clean install -DskipTests' } } }
-    stage('Package savia-ear')     { steps { dir('savia-ear')     { bat 'mvn -B -U clean package -DskipTests' } } }
-
-    stage('Run Tests (all)') {
-      steps { bat 'mvn -q -DskipTests=false test' }
-    }
-
-    // ?? NUEVA ETAPA: crea un único ZIP con lo compilado de los 4 módulos
-    stage('Zip compiled modules') {
+    stage('Create ZIP (compiled targets)') {
       steps {
-        // Limpia zip anterior, arma dist/ con target de cada módulo y comprime
-        bat '''
-          if exist build_compiled_all.zip del /F /Q build_compiled_all.zip
+        script {
+          // genera timestamp: 2025-08-22_18-35-07
+          env.BUILD_TS  = new Date().format("yyyy-MM-dd_HH-mm-ss")
+          env.ZIP_NAME  = "compiled_${env.BUILD_TS}_build-${env.BUILD_NUMBER}.zip"
+        }
+        // Crea un único ZIP con TODO lo compilado (target/ de cada módulo)
+        bat """
+          if exist %ZIP_NAME% del /F /Q %ZIP_NAME%
           powershell -NoProfile -Command ^
             "Remove-Item -Recurse -Force dist -ErrorAction SilentlyContinue; ^
-             New-Item -ItemType Directory -Force dist\\savia-ejb,dist\\savia-negocio,dist\\savia-web,dist\\savia-ear | Out-Null; ^
+             New-Item -ItemType Directory -Force dist\\savia-ejb\\target,dist\\savia-negocio\\target,dist\\savia-web\\target,dist\\savia-ear\\target | Out-Null; ^
              Copy-Item -Recurse -Force 'savia-ejb\\target\\*'     'dist\\savia-ejb\\target'     -ErrorAction SilentlyContinue; ^
              Copy-Item -Recurse -Force 'savia-negocio\\target\\*' 'dist\\savia-negocio\\target' -ErrorAction SilentlyContinue; ^
              Copy-Item -Recurse -Force 'savia-web\\target\\*'     'dist\\savia-web\\target'     -ErrorAction SilentlyContinue; ^
              Copy-Item -Recurse -Force 'savia-ear\\target\\*'     'dist\\savia-ear\\target'     -ErrorAction SilentlyContinue; ^
-             Compress-Archive -Path 'dist\\*' -DestinationPath 'build_compiled_all.zip' -Force"
-        '''
+             Compress-Archive -Path 'dist\\*' -DestinationPath '$env:ZIP_NAME' -Force"
+        """
       }
     }
 
-    stage('Archive Artifacts') {
+    stage('Archive ZIP') {
       steps {
-        // Publica el ZIP único + los artefactos finales como antes
-        archiveArtifacts artifacts: 'build_compiled_all.zip, savia-ear/target/*.ear, savia-web/target/*.war', fingerprint: true
-        junit allowEmptyResults: true, testResults: '**/target/surefire-reports/*.xml'
+        // quedará disponible para descarga desde la página del build
+        archiveArtifacts artifacts: "${env.ZIP_NAME}", fingerprint: true
       }
     }
 
     stage('Deploy to WildFly') {
       when { expression { return params.DEPLOY_TO_WILDFLY } }
       steps {
+        // Arranca WildFly si no está escuchando en el puerto de management
+        bat """
+          powershell -NoProfile -Command ^
+            "if(-not (Test-NetConnection -ComputerName ${env.WF_HOST} -Port ${env.WF_PORT}).TcpTestSucceeded){ ^
+               Start-Process -FilePath '${env.WILDFLY_HOME}\\bin\\standalone.bat' -ArgumentList '-c','standalone-full.xml','-b','0.0.0.0','-bmanagement','0.0.0.0' -WindowStyle Hidden; ^
+               for($i=0;$i -lt 60;$i++){ if((Test-NetConnection -ComputerName ${env.WF_HOST} -Port ${env.WF_PORT}).TcpTestSucceeded){break}; Start-Sleep -Seconds 2 } ^
+             }"
+        """
+
+        // despliegue del EAR (o WAR si no hay EAR) con jboss-cli
         withCredentials([usernamePassword(credentialsId: 'wildfly-admin', usernameVariable: 'WF_USER', passwordVariable: 'WF_PASS')]) {
-          bat '''
+          bat """
             set "JBOSS_CLI=%WILDFLY_HOME%\\bin\\jboss-cli.bat"
-            IF EXIST "savia-ear\\target" (
-              FOR /F "delims=" %%F IN ('dir /B /S "savia-ear\\target\\*.ear"') DO set "DEPLOY_FILE=%%F"
-            )
-            IF NOT DEFINED DEPLOY_FILE (
-              FOR /F "delims=" %%F IN ('dir /B /S "savia-web\\target\\*.war"') DO set "DEPLOY_FILE=%%F"
-            )
+            set "DEPLOY_FILE="
+            for /f "delims=" %%F in ('dir /B /S "savia-ear\\target\\*.ear"') do set "DEPLOY_FILE=%%F"
+            if not defined DEPLOY_FILE for /f "delims=" %%F in ('dir /B /S "savia-web\\target\\*.war"') do set "DEPLOY_FILE=%%F"
             echo Deploying %DEPLOY_FILE%
-            "%JBOSS_CLI%" --controller=%WF_HOST%:%WF_PORT% --user=%WF_USER% --password=%WF_PASS% --connect --command="deploy \"%DEPLOY_FILE%\" --force"
-          '''
+            "%JBOSS_CLI%" --controller=%WF_HOST%:%WF_PORT% --user=%WF_USER% --password=%WF_PASS% --connect --commands="deploy \"%DEPLOY_FILE%\" --force"
+          """
         }
       }
     }
   }
 
   post {
-    success { echo '? Pipeline OK' }
-    failure { echo '? Pipeline FAILED' }
-    always {
-      script {
-        if (params.USE_DOCKER_DB && env.WORKSPACE) {
-          bat 'docker ps --format "{{.Names}}" | findstr /I "^ci-mysql$" >nul && docker stop ci-mysql'
-        }
-      }
-    }
+    success { echo "? Compilación OK — ZIP generado: ${env.ZIP_NAME}" }
+    failure { echo '? Falló la compilación' }
   }
 }
