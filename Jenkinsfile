@@ -2,87 +2,145 @@ pipeline {
   agent { label 'Linux' }
 
   tools {
-    maven 'Maven'   // nombre configurado en Manage Jenkins
-    jdk   'jdk11'   // o 'jdk17'
+    maven 'Maven'
+    jdk   'jdk11'
   }
 
-  options { timestamps() }
-
   environment {
-    MAVEN_FLAGS = '-B -U -DskipTests'
-    ZIP_OUT_DIR = "${WORKSPACE}/dist"
-    ZIP_NAME    = "savia-modulos.zip"
+    WILDFLY_HOME = "${WORKSPACE}/wildfly-19.1.0.Final"
+    DEPLOYMENTS  = "${WILDFLY_HOME}/standalone/deployments"
+    EAR_NAME     = 'savia-ear.ear'
+    ZIP_OUT_DIR  = "${WORKSPACE}/dist"
+    ZIP_NAME     = "savia-modulos.zip"
+    USE_EXPLODED = 'false'
   }
 
   stages {
-    stage('Checkout SCM') {
-      steps { checkout scm }
-    }
+    stage('Checkout SCM') { steps { checkout scm } }
 
-    stage('Build (ejb ? negocio ? web ? ear)') {
+    stage('Build Modules') {
       steps {
-        // Forzamos bash para tener pipefail y mejor manejo de errores
-        sh '''
-/usr/bin/env bash <<'BASH'
-set -euo pipefail
+        script {
+          echo '? Compilando módulos (negocio ? ejb ? web ? ear)...'
+          sh "mvn -f \"${WORKSPACE}/savia-negocio/pom.xml\" clean install -DskipTests"
+          sh "mvn -f \"${WORKSPACE}/savia-ejb/pom.xml\"     clean install -DskipTests"
+          sh "mvn -f \"${WORKSPACE}/savia-web/pom.xml\"     clean install -DskipTests"
+          sh "mvn -f \"${WORKSPACE}/savia-ear/pom.xml\"     clean package -DskipTests"
 
-echo "? Limpieza selectiva del repo local (opcional)"
-rm -rf "${HOME}/.m2/repository/com/saviasaludeps/savia" || true
-
-echo "? Compilando ejb..."
-mvn -f "${WORKSPACE}/savia-ejb/pom.xml" clean install ${MAVEN_FLAGS}
-
-echo "? Compilando negocio..."
-mvn -f "${WORKSPACE}/savia-negocio/pom.xml" clean install ${MAVEN_FLAGS}
-
-echo "? Empaquetando web (WAR)..."
-mvn -f "${WORKSPACE}/savia-web/pom.xml" clean package ${MAVEN_FLAGS}
-
-echo "? Empaquetando ear..."
-mvn -f "${WORKSPACE}/savia-ear/pom.xml" clean package ${MAVEN_FLAGS}
-
-echo "? Resolviendo artefactos generados..."
-EJB_JAR=$(ls -1 "${WORKSPACE}/savia-ejb/target/"*.jar 2>/dev/null | grep -vE 'sources|javadoc' | head -n1 || true)
-NEG_JAR=$(ls -1 "${WORKSPACE}/savia-negocio/target/"*.jar 2>/dev/null | grep -vE 'sources|javadoc' | head -n1 || true)
-WAR_PATH=$(ls -1 "${WORKSPACE}/savia-web/target/"*.war 2>/dev/null | head -n1 || true)
-EAR_PATH=$(ls -1 "${WORKSPACE}/savia-ear/target/"*.ear 2>/dev/null | head -n1 || true)
-
-[ -n "$EAR_PATH" ] || { echo "? No se encontró .ear en savia-ear/target"; exit 1; }
-[ -n "$WAR_PATH" ] || echo "??  No se encontró .war en savia-web/target (continuo sin WAR)"
-
-echo "? Preparando carpeta de distribución..."
-rm -rf "${ZIP_OUT_DIR}"; mkdir -p "${ZIP_OUT_DIR}"
-
-cp -f "$EAR_PATH" "${ZIP_OUT_DIR}/"
-[ -n "$WAR_PATH" ] && cp -f "$WAR_PATH" "${ZIP_OUT_DIR}/"
-[ -n "$EJB_JAR" ] && cp -f "$EJB_JAR" "${ZIP_OUT_DIR}/"
-[ -n "$NEG_JAR" ] && cp -f "$NEG_JAR" "${ZIP_OUT_DIR}/"
-
-echo "??  Empaquetando ZIP..."
-cd "${ZIP_OUT_DIR}"
-if command -v zip >/dev/null 2>&1; then
-  zip -r "${ZIP_NAME}" .
-else
-  # Fallback sin 'zip': usa jar (mismo formato zip)
-  jar -cfM "${ZIP_NAME}" .
-fi
-
-echo "? Listo: ${ZIP_OUT_DIR}/${ZIP_NAME}"
-BASH
-        '''
+          def generatedEar = sh(script: "ls ${WORKSPACE}/savia-ear/target/*.ear | head -n 1", returnStdout: true).trim()
+          if (!generatedEar) { error "No se encontró el EAR en target" }
+          sh "mv -f \"${generatedEar}\" \"${WORKSPACE}/savia-ear/target/${EAR_NAME}\""
+          echo "? EAR renombrado a ${EAR_NAME}"
+        }
       }
     }
 
-    stage('Publicar artefactos') {
+    // Empaquetar módulos en un ZIP (usa 'jar' que genera ZIP)
+    stage('Package ZIP with modules') {
       steps {
-        archiveArtifacts artifacts: 'dist/*.zip, dist/*.ear, dist/*.war, dist/*.jar', allowEmptyArchive: false
+        sh """
+          set -e
+          rm -rf "${ZIP_OUT_DIR}" && mkdir -p "${ZIP_OUT_DIR}"
+          cp -f ${WORKSPACE}/savia-ejb/target/*.jar      "${ZIP_OUT_DIR}/" || true
+          cp -f ${WORKSPACE}/savia-negocio/target/*.jar  "${ZIP_OUT_DIR}/" || true
+          cp -f ${WORKSPACE}/savia-web/target/*.war      "${ZIP_OUT_DIR}/" || true
+          cp -f ${WORKSPACE}/savia-ear/target/*.ear      "${ZIP_OUT_DIR}/" || true
+          cd "${ZIP_OUT_DIR}"
+          jar -cfM "${ZIP_NAME}" .
+          echo "? ZIP generado en: ${ZIP_OUT_DIR}/${ZIP_NAME}"
+        """
       }
     }
-  }
 
-  post {
-    always {
-      sh 'ls -lh dist || true'
+    stage('Publish ZIP') {
+      steps { archiveArtifacts artifacts: 'dist/savia-modulos.zip', fingerprint: true }
+    }
+
+    stage('Stop WildFly') {
+      steps {
+        sh """
+          set +e
+          ${WILDFLY_HOME}/bin/jboss-cli.sh --connect command=:shutdown 2>/dev/null || true
+          sleep 5
+          echo '? WildFly detenido (si estaba corriendo).'
+        """
+      }
+    }
+
+    stage('Deploy to WildFly') {
+      steps {
+        script {
+          if (env.USE_EXPLODED.toBoolean()) {
+            echo '? Despliegue EXPLODED (carpeta .ear/)'
+            sh """
+              set -e
+              mkdir -p ${DEPLOYMENTS}
+              rm -rf "${DEPLOYMENTS}/${EAR_NAME}" "${DEPLOYMENTS}/${EAR_NAME}.dodeploy" "${DEPLOYMENTS}/${EAR_NAME}.deployed" "${DEPLOYMENTS}/${EAR_NAME}.failed" "${DEPLOYMENTS}/${EAR_NAME}.undeployed" || true
+              mkdir -p "${DEPLOYMENTS}/${EAR_NAME}"
+              if ! command -v unzip >/dev/null 2>&1; then
+                if command -v apt-get >/dev/null 2>&1; then sudo apt-get update && sudo apt-get install -y unzip;
+                elif command -v yum >/dev/null 2>&1; then sudo yum install -y unzip;
+                elif command -v apk >/dev/null 2>&1; then sudo apk add --no-cache unzip;
+                else echo "Instala unzip en el agente"; exit 1; fi
+              fi
+              unzip -q "${WORKSPACE}/savia-ear/target/${EAR_NAME}" -d "${DEPLOYMENTS}/${EAR_NAME}"
+              : > "${DEPLOYMENTS}/${EAR_NAME}.dodeploy"
+            """
+          } else {
+            echo '? Despliegue EAR comprimido'
+            sh """
+              set -e
+              mkdir -p ${DEPLOYMENTS}
+              rm -rf "${DEPLOYMENTS}/${EAR_NAME}" "${DEPLOYMENTS}/${EAR_NAME}.dodeploy" "${DEPLOYMENTS}/${EAR_NAME}.deployed" "${DEPLOYMENTS}/${EAR_NAME}.failed" "${DEPLOYMENTS}/${EAR_NAME}.undeployed" || true
+              cp -f "${WORKSPACE}/savia-ear/target/${EAR_NAME}" "${DEPLOYMENTS}/"
+              : > "${DEPLOYMENTS}/${EAR_NAME}.dodeploy"
+            """
+          }
+        }
+      }
+    }
+
+    stage('Unblock WildFly files') {
+      steps {
+        sh """
+          chmod +x ${WILDFLY_HOME}/bin/*.sh
+          echo "? Scripts de WildFly marcados como ejecutables."
+        """
+      }
+    }
+
+    stage('Start WildFly') {
+      steps {
+        sh """
+          nohup ${WILDFLY_HOME}/bin/standalone.sh -b 0.0.0.0 > ${WILDFLY_HOME}/standalone/log/boot.out 2>&1 &
+          echo "? WildFly iniciado."
+        """
+      }
+    }
+
+    stage('Verify Deployment') {
+      steps {
+        script {
+          def logPath = "${WILDFLY_HOME}/standalone/log/server.log"
+          timeout(time: 150, unit: 'SECONDS') {
+            waitUntil {
+              def exists = sh(script: "[ -f ${logPath} ] && echo yes || echo no", returnStdout: true).trim()
+              if (exists == 'yes') {
+                def logContent = sh(script: "tail -n 300 ${logPath}", returnStdout: true).trim()
+                if (logContent.contains("Deployed \"${EAR_NAME}\"")) {
+                  echo "? EAR desplegado correctamente en WildFly."
+                  return true
+                }
+                if (logContent.contains(".failed")) {
+                  error "? El despliegue de ${EAR_NAME} falló. Revisa ${logPath}."
+                }
+              }
+              sleep 5
+              return false
+            }
+          }
+        }
+      }
     }
   }
 }
