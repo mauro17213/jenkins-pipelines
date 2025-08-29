@@ -1,3 +1,4 @@
+funiona en linux 
 pipeline {
     agent { label 'Linux' }
 
@@ -22,30 +23,25 @@ pipeline {
         stage('Build Modules') {
             steps {
                 script {
-                    echo '? Compilando módulos...'
-                    sh '''
-                        set -e
-                        
-                        # Build modules in the correct dependency order
-                        echo '? Compilando savia-negocio...'
-                        mvn -f "${WORKSPACE}/savia-negocio/pom.xml" clean install -DskipTests -B -U
+                    try {
+                        echo '? Compilando módulos...'
+                        sh "mvn -f \"${WORKSPACE}/savia-ejb/pom.xml\" clean install -DskipTests"
+                        sh "mvn -f \"${WORKSPACE}/savia-negocio/pom.xml\" clean install -DskipTests"
+                        sh "mvn -f \"${WORKSPACE}/savia-web/pom.xml\" clean install -DskipTests"
+                        sh "mvn -f \"${WORKSPACE}/savia-ear/pom.xml\" clean package -DskipTests"
 
-                        echo '? Compilando savia-ejb...'
-                        mvn -f "${WORKSPACE}/savia-ejb/pom.xml" clean install -DskipTests -B -U
+                        def generatedEar = sh(script: "ls ${WORKSPACE}/savia-ear/target/*.ear | head -n 1", returnStdout: true).trim()
+                        if (generatedEar) {
+                            sh "mv ${generatedEar} ${WORKSPACE}/savia-ear/target/${EAR_NAME}"
+                            echo "? EAR renombrado a ${EAR_NAME}"
+                        } else {
+                            error "No se encontró el EAR generado en target"
+                        }
 
-                        echo '? Compilando savia-web...'
-                        mvn -f "${WORKSPACE}/savia-web/pom.xml" clean install -DskipTests -B -U
-                        
-                        echo '? Empaquetando savia-ear...'
-                        mvn -f "${WORKSPACE}/savia-ear/pom.xml" clean package -DskipTests -B -U
-
-                        # Rename EAR to a stable name
-                        generatedEar=$(ls savia-ear/target/*.ear | head -n 1)
-                        [ -f "$generatedEar" ] || { echo "? No se generó el EAR"; exit 1; }
-                        cp "$generatedEar" "savia-ear/target/${EAR_NAME}"
-                        echo "? EAR renombrado a ${EAR_NAME}"
-                    '''
-                    echo '? Compilación completa'
+                        echo '? Compilación completa'
+                    } catch (err) {
+                        error "? ERROR compilando módulos: ${err}"
+                    }
                 }
             }
         }
@@ -53,10 +49,14 @@ pipeline {
         stage('Stop WildFly') {
             steps {
                 script {
-                    echo '? Deteniendo WildFly...'
-                    sh "sudo ${WILDFLY_HOME}/bin/jboss-cli.sh --connect command=:shutdown || true"
-                    sleep 5
-                    echo '? WildFly detenido (si estaba en ejecución).'
+                    // Detener WildFly si está corriendo
+                    sh """
+                        if [ -f "${WILDFLY_HOME}/standalone/tmp" ]; then
+                            ${WILDFLY_HOME}/bin/jboss-cli.sh --connect command=:shutdown || true
+                            sleep 5
+                            echo "? WildFly detenido."
+                        fi
+                    """
                 }
             }
         }
@@ -64,43 +64,69 @@ pipeline {
         stage('Deploy EAR') {
             steps {
                 script {
-                    echo '? Desplegando el EAR...'
-                    sh '''
-                        set -e
-                        mkdir -p "${DEPLOYMENTS}"
-                        rm -rf "${DEPLOYMENTS}/${EAR_NAME}" "${DEPLOYMENTS}/${EAR_NAME}.dodeploy" || true
-                        cp "${WORKSPACE}/savia-ear/target/${EAR_NAME}" "${DEPLOYMENTS}/"
-                        touch "${DEPLOYMENTS}/${EAR_NAME}.dodeploy"
-                        echo "? EAR copiado a la carpeta de despliegues."
-                    '''
+                    try {
+                        echo "?? Limpiando carpeta de despliegues..."
+                        sh "mkdir -p ${DEPLOYMENTS}"
+                        sh "rm -rf ${DEPLOYMENTS}/*"
+
+                        echo "? Copiando EAR generado..."
+                        sh """
+                            if [ -f "${WORKSPACE}/savia-ear/target/${EAR_NAME}" ]; then
+                                cp "${WORKSPACE}/savia-ear/target/${EAR_NAME}" "${DEPLOYMENTS}/"
+                                echo '? EAR copiado correctamente.'
+                            else
+                                echo 'No se encontró el EAR renombrado'
+                                exit 1
+                            fi
+                        """
+                    } catch (e) {
+                        error "? Error en despliegue: ${e.message}"
+                    }
                 }
+            }
+        }
+
+        stage('Unblock WildFly files') {
+            steps {
+                sh """
+                    chmod +x ${WILDFLY_HOME}/bin/*.sh
+                    echo "? Scripts de WildFly marcados como ejecutables."
+                """
             }
         }
 
         stage('Start WildFly') {
             steps {
-                script {
-                    echo '?? Iniciando WildFly...'
-                    sh "nohup ${WILDFLY_HOME}/bin/standalone.sh -b 0.0.0.0 > ${WILDFLY_HOME}/standalone/log/boot.out 2>&1 &"
-                    echo '? WildFly iniciado.'
-                }
+                sh "nohup ${WILDFLY_HOME}/bin/standalone.sh -b 0.0.0.0 > /dev/null 2>&1 &"
+                echo "? WildFly iniciado."
             }
         }
 
         stage('Verify Deployment') {
-            steps {
-                script {
-                    def logPath = "${WILDFLY_HOME}/standalone/log/server.log"
-                    echo "? Verificando el despliegue en el log de WildFly..."
-                    timeout(time: 180, unit: 'SECONDS') {
-                        waitUntil {
-                            sh(script: "test -f ${logPath}", returnStatus: true) == 0 &&
-                            sh(script: "tail -n 200 ${logPath} | grep 'Deployed \"${EAR_NAME}\"'", returnStatus: true) == 0
+    steps {
+        script {
+            def logPath = "${WILDFLY_HOME}/standalone/log/server.log"
+
+            timeout(time: 120, unit: 'SECONDS') { // aumenta timeout si WildFly es pesado
+                waitUntil {
+                    def exists = sh(script: "[ -f ${logPath} ] && echo 'yes' || echo 'no'", returnStdout: true).trim()
+                    if (exists == 'yes') {
+                        def logContent = sh(script: "tail -n 200 ${logPath}", returnStdout: true).trim()
+                        if (logContent.contains("Deployed \"${EAR_NAME}\"")) {
+                            echo "? EAR desplegado correctamente en WildFly."
+                            return true
+                        }
+                        if (logContent.contains(".failed")) {
+                            error "? El despliegue de ${EAR_NAME} falló. Revisa server.log."
                         }
                     }
-                    echo '? Despliegue verificado y exitoso.'
+                    sleep 5 // espera 5 segundos antes de volver a comprobar
+                    return false
                 }
             }
         }
+      }
+  }
+
     }
 }
