@@ -6,152 +6,108 @@ pipeline {
     jdk   'jdk11'
   }
 
-  environment {
-    // === BUILD LOCAL ===
-    EAR_NAME     = 'savia-ear.ear'
-    ZIP_OUT_DIR  = "${WORKSPACE}/dist"
-    ZIP_NAME     = "savia-modulos.zip"
+  options { timestamps() }
 
-    // === REMOTO WINDOWS ===
-    WIN_HOST        = 'MI-SERVIDOR-WINDOWS'          // <-- CAMBIA AQUÍ (hostname o IP)
-    REMOTE_WF_MNT   = '/mnt/wildfly'                 // punto de montaje en Linux
-    REMOTE_WF_ROOT  = "${REMOTE_WF_MNT}"             // mapearemos C:\wildfly-19.1.0.Final a /mnt/wildfly
-    REMOTE_DEPLOY   = "${REMOTE_WF_ROOT}/standalone/deployments"
-    REMOTE_LOG      = "${REMOTE_WF_ROOT}/standalone/log/server.log"
+  environment {
+    // WildFly local en el agente Linux (ajusta si está en otra ruta)
+    WILDFLY_HOME = "${WORKSPACE}/wildfly-19.1.0.Final"
+    BIND_ADDR    = '0.0.0.0'
+    MGMT_HOST    = '127.0.0.1'
+    MGMT_PORT    = '9990'
+
+    EAR_NAME     = 'savia-ear.ear'
+    MAVEN_FLAGS  = '-B -U -DskipTests'
   }
 
   stages {
     stage('Checkout SCM') { steps { checkout scm } }
 
-    stage('Build Modules') {
+    stage('Build (negocio ? ejb ? web ? ear)') {
       steps {
-        script {
-          echo '? Compilando módulos (negocio ? ejb ? web ? ear)...'
-          sh "mvn -f \"${WORKSPACE}/savia-negocio/pom.xml\" clean install -DskipTests -B -U"
-          sh "mvn -f \"${WORKSPACE}/savia-ejb/pom.xml\"     clean install -DskipTests -B -U"
-          sh "mvn -f \"${WORKSPACE}/savia-web/pom.xml\"     clean install -DskipTests -B -U"
-          sh "mvn -f \"${WORKSPACE}/savia-ear/pom.xml\"     clean package   -DskipTests -B -U"
-
-          def generatedEar = sh(script: "ls ${WORKSPACE}/savia-ear/target/*.ear | head -n 1", returnStdout: true).trim()
-          if (!generatedEar) { error "No se encontró el EAR en target" }
-          sh "cp -f \"${generatedEar}\" \"${WORKSPACE}/savia-ear/target/${EAR_NAME}\""
-          echo "? EAR listo como ${EAR_NAME}"
-        }
-      }
-    }
-
-    stage('Package ZIP with modules') {
-      steps {
-        sh """
+        sh '''
           set -e
-          rm -rf "${ZIP_OUT_DIR}" && mkdir -p "${ZIP_OUT_DIR}"
-          cp -f ${WORKSPACE}/savia-ejb/target/*.jar      "${ZIP_OUT_DIR}/" || true
-          cp -f ${WORKSPACE}/savia-negocio/target/*.jar  "${ZIP_OUT_DIR}/" || true
-          cp -f ${WORKSPACE}/savia-web/target/*.war      "${ZIP_OUT_DIR}/" || true
-          cp -f ${WORKSPACE}/savia-ear/target/*.ear      "${ZIP_OUT_DIR}/" || true
-          cd "${ZIP_OUT_DIR}"
-          jar -cfM "${ZIP_NAME}" .
-          echo "?? ZIP generado en: ${ZIP_OUT_DIR}/${ZIP_NAME}"
-        """
-      }
-    }
+          echo "? Compilando módulos..."
+          mvn -f "$WORKSPACE/savia-negocio/pom.xml" clean install ${MAVEN_FLAGS}
+          mvn -f "$WORKSPACE/savia-ejb/pom.xml"     clean install ${MAVEN_FLAGS}
+          mvn -f "$WORKSPACE/savia-web/pom.xml"     clean install ${MAVEN_FLAGS}
+          mvn -f "$WORKSPACE/savia-ear/pom.xml"     clean package ${MAVEN_FLAGS}
 
-    stage('Publicar ZIP') {
-      steps { archiveArtifacts artifacts: 'dist/savia-modulos.zip', fingerprint: true }
-    }
-
-    stage('Montar share de WildFly (Windows)') {
-      steps {
-        withCredentials([usernamePassword(credentialsId: 'win-smb-creds',
-                                          usernameVariable: 'WIN_USER',
-                                          passwordVariable: 'WIN_PASS')]) {
-          sh """
-            set -e
-            # Instalar cifs-utils si falta
-            if ! command -v mount.cifs >/dev/null 2>&1; then
-              if command -v apt-get >/dev/null 2>&1; then
-                sudo apt-get update && sudo apt-get install -y cifs-utils
-              elif command -v yum >/dev/null 2>&1; then
-                sudo yum install -y cifs-utils
-              elif command -v apk >/dev/null 2>&1; then
-                sudo apk add --no-cache cifs-utils
-              else
-                echo "? No puedo instalar cifs-utils automáticamente. Instálalo en el agente."
-                exit 1
-              fi
-            fi
-
-            sudo mkdir -p "${REMOTE_WF_MNT}"
-            # Desmontar si estaba montado
-            sudo umount "${REMOTE_WF_MNT}" >/dev/null 2>&1 || true
-
-            # Montar C$\\wildfly-19.1.0.Final en /mnt/wildfly
-            sudo mount -t cifs //${WIN_HOST}/C\\$/wildfly-19.1.0.Final "${REMOTE_WF_MNT}" \\
-              -o username="${WIN_USER}",password="${WIN_PASS}",vers=3.0,sec=ntlmssp,uid=$(id -u),gid=$(id -g),file_mode=0664,dir_mode=0775
-
-            echo "? Montado //${WIN_HOST}/C$/wildfly-19.1.0.Final -> ${REMOTE_WF_MNT}"
-          """
-        }
-      }
-    }
-
-    stage('Desplegar EXPLODEADO al deployments') {
-      steps {
-        sh """
-          set -e
-          # Asegurar unzip
-          if ! command -v unzip >/dev/null 2>&1; then
-            if command -v apt-get >/dev/null 2>&1; then sudo apt-get update && sudo apt-get install -y unzip;
-            elif command -v yum     >/dev/null 2>&1; then sudo yum install -y unzip;
-            elif command -v apk     >/dev/null 2>&1; then sudo apk add --no-cache unzip;
-            else echo "? Instala 'unzip' en el agente"; exit 1; fi
+          EAR=$(ls "$WORKSPACE/savia-ear/target/"*.ear | head -n1 || true)
+          if [ -z "$EAR" ]; then
+            echo "? No se encontró .ear en savia-ear/target"; exit 1
           fi
 
-          APP_DIR="${REMOTE_DEPLOY}/${EAR_NAME}"
-
-          echo "? Limpiando despliegue previo…"
-          rm -rf "${APP_DIR}" \\
-                 "${APP_DIR}.dodeploy" \\
-                 "${APP_DIR}.deployed" \\
-                 "${APP_DIR}.failed" \\
-                 "${APP_DIR}.undeployed" || true
-
-          echo "? Creando carpeta explodeada: ${APP_DIR}"
-          mkdir -p "${APP_DIR}"
-
-          echo "? Descomprimiendo EAR en ${APP_DIR}"
-          unzip -q "${WORKSPACE}/savia-ear/target/${EAR_NAME}" -d "${APP_DIR}"
-
-          echo "? Marcando .dodeploy"
-          : > "${APP_DIR}.dodeploy"
-        """
+          # Normaliza el nombre del artefacto para usarlo como runtime-name
+          cp -f "$EAR" "$WORKSPACE/savia-ear/target/$EAR_NAME"
+          echo "? EAR listo: $EAR_NAME"
+        '''
       }
     }
 
-    stage('Verificar despliegue (scanner)') {
+    stage('Start WildFly') {
+      steps {
+        sh '''
+          set -e
+          chmod +x "$WILDFLY_HOME/bin/"*.sh || true
+
+          # Intenta apagar por si quedó algo
+          set +e
+          "$WILDFLY_HOME/bin/jboss-cli.sh" --connect --commands=":shutdown" >/dev/null 2>&1
+          set -e
+          sleep 3
+
+          echo "?? Iniciando WildFly..."
+          nohup "$WILDFLY_HOME/bin/standalone.sh" -b ${BIND_ADDR} > "$WILDFLY_HOME/standalone/log/boot.out" 2>&1 &
+
+          echo "? Esperando a que el mgmt llegue a RUNNING..."
+          for i in $(seq 1 60); do
+            STATE=$("$WILDFLY_HOME/bin/jboss-cli.sh" --connect --commands=":read-attribute(name=server-state)" 2>/dev/null | sed -n 's/.*result => \"\\(.*\\)\".*/\\1/p')
+            if [ "$STATE" = "running" ]; then
+              echo "? WildFly en estado RUNNING"; break
+            fi
+            sleep 2
+            if [ $i -eq 60 ]; then echo "? WildFly no llegó a RUNNING"; exit 1; fi
+          done
+        '''
+      }
+    }
+
+    stage('Deploy via CLI (sin dejar archivos)') {
+      steps {
+        sh '''
+          set -e
+          EAR_PATH="$WORKSPACE/savia-ear/target/$EAR_NAME"
+
+          echo "? Desplegando ${EAR_NAME} con CLI (managed deployment)..."
+          # --name / --runtime-name fijan el nombre lógico; --force hace redeploy si ya existe
+          "$WILDFLY_HOME/bin/jboss-cli.sh" --connect --commands="deploy \"$EAR_PATH\" --name=${EAR_NAME} --runtime-name=${EAR_NAME} --force"
+
+          # Verifica que el deployment exista y esté habilitado
+          INFO=$("$WILDFLY_HOME/bin/jboss-cli.sh" --connect --commands="/deployment=${EAR_NAME}:read-resource(include-runtime=true)")
+          echo "$INFO" | grep -q 'enabled => true' || { echo "? Deployment no quedó enabled"; echo "$INFO"; exit 1; }
+
+          echo "? Eliminando artefacto local (no quedará en ninguna carpeta)"
+          rm -f "$EAR_PATH"
+        '''
+      }
+    }
+
+    stage('Verificar en server.log') {
       steps {
         script {
-          def appDir = "${env.REMOTE_DEPLOY}/${env.EAR_NAME}"
-          def logPath = "${env.REMOTE_LOG}"
-
-          timeout(time: 180, unit: 'SECONDS') {
+          def logPath = "${env.WILDFLY_HOME}/standalone/log/server.log"
+          timeout(time: 120, unit: 'SECONDS') {
             waitUntil {
-              def state = sh(script: """
-                if [ -f "${appDir}.deployed" ]; then echo OK;
-                elif [ -f "${appDir}.failed" ]; then echo FAIL;
-                else echo WAIT; fi
-              """, returnStdout: true).trim()
-
-              if (state == 'OK') {
-                echo "? Deploy OK (.deployed encontrado)"
+              def ok = sh(script: "grep -qE 'Deployed \\\"${env.EAR_NAME}\\\"|WFLYSRV0010: Deployed \\\"${env.EAR_NAME}\\\"' '${logPath}' && echo yes || echo no", returnStdout: true).trim()
+              if (ok == 'yes') {
+                echo "? Despliegue OK según server.log"
                 return true
               }
-              if (state == 'FAIL') {
-                echo "? Deploy FAILED (.failed encontrado). Últimas líneas de server.log:"
-                sh "tail -n 200 '${logPath}' || true"
-                error "El despliegue de ${env.EAR_NAME} falló."
+              def fail = sh(script: "grep -q '.failed' '${logPath}' && echo yes || echo no", returnStdout: true).trim()
+              if (fail == 'yes') {
+                error "? El despliegue de ${env.EAR_NAME} falló. Revisa ${logPath}."
               }
-              sleep 5
+              sleep 3
               return false
             }
           }
@@ -161,14 +117,8 @@ pipeline {
   }
 
   post {
-    always {
-      sh """
-        echo "? Contenido dist:"
-        ls -lh '${ZIP_OUT_DIR}' || true
-
-        echo "? Desmontando share…"
-        sudo umount '${REMOTE_WF_MNT}' || true
-      """
+    failure {
+      sh 'tail -n 200 "$WILDFLY_HOME/standalone/log/server.log" || true'
     }
   }
 }
