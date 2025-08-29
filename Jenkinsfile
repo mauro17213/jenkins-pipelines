@@ -2,19 +2,16 @@ pipeline {
   agent { label 'Linux' }
 
   tools {
-    maven 'Maven'   // nombre de Maven en Jenkins
+    maven 'Maven'   // nombre configurado en Manage Jenkins
     jdk   'jdk11'   // o 'jdk17'
   }
 
   options { timestamps() }
 
   environment {
-    // Cambia si tu WildFly está en otra ruta
-    WILDFLY_HOME = '/opt/wildfly-19.1.0.Final'
-    DEPLOYMENTS  = "${WILDFLY_HOME}/standalone/deployments"
-    EAR_NAME     = 'savia-ear.ear'
-    MAVEN_FLAGS  = '-B -U -DskipTests'
-    BIND_ADDR    = '0.0.0.0'
+    MAVEN_FLAGS = '-B -U -DskipTests'
+    ZIP_OUT_DIR = "${WORKSPACE}/dist"
+    ZIP_NAME    = "savia-modulos.zip"
   }
 
   stages {
@@ -22,116 +19,70 @@ pipeline {
       steps { checkout scm }
     }
 
-    stage('Build Modules (sin POM padre)') {
+    stage('Build (ejb ? negocio ? web ? ear)') {
       steps {
-        script {
-          sh '''
-            set -e
-            echo "Compilando modulos..."
-            # Orden recomendado por dependencias
-            mvn -f "${WORKSPACE}/savia-negocio/pom.xml" clean install ${MAVEN_FLAGS}
-            mvn -f "${WORKSPACE}/savia-ejb/pom.xml"     clean install ${MAVEN_FLAGS}
-            mvn -f "${WORKSPACE}/savia-web/pom.xml"     clean package ${MAVEN_FLAGS}
-            mvn -f "${WORKSPACE}/savia-ear/pom.xml"     clean package ${MAVEN_FLAGS}
-
-            # Renombrar/copiar el EAR generado a nombre fijo
-            EAR=$(ls -1 "${WORKSPACE}/savia-ear/target/"*.ear | head -n1 || true)
-            if [ -z "$EAR" ]; then
-              echo "ERROR: No se encontro EAR en savia-ear/target"
-              exit 1
-            fi
-            cp -f "$EAR" "${WORKSPACE}/savia-ear/target/${EAR_NAME}"
-            echo "EAR listo: ${EAR_NAME}"
-          '''
-        }
-      }
-    }
-
-    stage('Stop WildFly') {
-      steps {
+        // Forzamos bash para tener pipefail y mejor manejo de errores
         sh '''
-          set +e
-          # Intento elegante por CLI
-          "${WILDFLY_HOME}/bin/jboss-cli.sh" --connect command=":shutdown" >/dev/null 2>&1
-          sleep 3
-          # Mata procesos residuales si quedaron
-          PIDS=$(pgrep -f "wildfly.*org.jboss.as")
-          if [ -n "$PIDS" ]; then
-            echo "Deteniendo procesos WildFly residuales: $PIDS"
-            kill -9 $PIDS
-          fi
-          set -e
-          echo "WildFly detenido (o ya estaba detenido)."
+/usr/bin/env bash <<'BASH'
+set -euo pipefail
+
+echo "? Limpieza selectiva del repo local (opcional)"
+rm -rf "${HOME}/.m2/repository/com/saviasaludeps/savia" || true
+
+echo "? Compilando ejb..."
+mvn -f "${WORKSPACE}/savia-ejb/pom.xml" clean install ${MAVEN_FLAGS}
+
+echo "? Compilando negocio..."
+mvn -f "${WORKSPACE}/savia-negocio/pom.xml" clean install ${MAVEN_FLAGS}
+
+echo "? Empaquetando web (WAR)..."
+mvn -f "${WORKSPACE}/savia-web/pom.xml" clean package ${MAVEN_FLAGS}
+
+echo "? Empaquetando ear..."
+mvn -f "${WORKSPACE}/savia-ear/pom.xml" clean package ${MAVEN_FLAGS}
+
+echo "? Resolviendo artefactos generados..."
+EJB_JAR=$(ls -1 "${WORKSPACE}/savia-ejb/target/"*.jar 2>/dev/null | grep -vE 'sources|javadoc' | head -n1 || true)
+NEG_JAR=$(ls -1 "${WORKSPACE}/savia-negocio/target/"*.jar 2>/dev/null | grep -vE 'sources|javadoc' | head -n1 || true)
+WAR_PATH=$(ls -1 "${WORKSPACE}/savia-web/target/"*.war 2>/dev/null | head -n1 || true)
+EAR_PATH=$(ls -1 "${WORKSPACE}/savia-ear/target/"*.ear 2>/dev/null | head -n1 || true)
+
+[ -n "$EAR_PATH" ] || { echo "? No se encontró .ear en savia-ear/target"; exit 1; }
+[ -n "$WAR_PATH" ] || echo "??  No se encontró .war en savia-web/target (continuo sin WAR)"
+
+echo "? Preparando carpeta de distribución..."
+rm -rf "${ZIP_OUT_DIR}"; mkdir -p "${ZIP_OUT_DIR}"
+
+cp -f "$EAR_PATH" "${ZIP_OUT_DIR}/"
+[ -n "$WAR_PATH" ] && cp -f "$WAR_PATH" "${ZIP_OUT_DIR}/"
+[ -n "$EJB_JAR" ] && cp -f "$EJB_JAR" "${ZIP_OUT_DIR}/"
+[ -n "$NEG_JAR" ] && cp -f "$NEG_JAR" "${ZIP_OUT_DIR}/"
+
+echo "??  Empaquetando ZIP..."
+cd "${ZIP_OUT_DIR}"
+if command -v zip >/dev/null 2>&1; then
+  zip -r "${ZIP_NAME}" .
+else
+  # Fallback sin 'zip': usa jar (mismo formato zip)
+  jar -cfM "${ZIP_NAME}" .
+fi
+
+echo "? Listo: ${ZIP_OUT_DIR}/${ZIP_NAME}"
+BASH
         '''
       }
     }
 
-    stage('Deploy EAR') {
+    stage('Publicar artefactos') {
       steps {
-        sh '''
-          set -e
-          echo "Limpiando carpeta deployments..."
-          mkdir -p "${DEPLOYMENTS}"
-          rm -f "${DEPLOYMENTS}"/*.failed "${DEPLOYMENTS}"/*.undeployed || true
-          rm -f "${DEPLOYMENTS}/${EAR_NAME}" || true
-
-          echo "Copiando EAR..."
-          cp -f "${WORKSPACE}/savia-ear/target/${EAR_NAME}" "${DEPLOYMENTS}/${EAR_NAME}"
-
-          # Forzar auto-deploy si aplica
-          touch "${DEPLOYMENTS}/${EAR_NAME}.dodeploy" || true
-          echo "EAR copiado a ${DEPLOYMENTS}/${EAR_NAME}"
-        '''
-      }
-    }
-
-    stage('Start WildFly') {
-      steps {
-        sh '''
-          set -e
-          chmod +x "${WILDFLY_HOME}/bin/"*.sh || true
-          nohup "${WILDFLY_HOME}/bin/standalone.sh" -b ${BIND_ADDR} > "${WILDFLY_HOME}/standalone/nohup.out" 2>&1 &
-          echo "WildFly iniciandose..."
-          sleep 10
-        '''
-      }
-    }
-
-    stage('Verify Deployment') {
-      steps {
-        script {
-          def logPath = "${WILDFLY_HOME}/standalone/log/server.log"
-          timeout(time: 120, unit: 'SECONDS') {
-            waitUntil {
-              def exists = sh(script: "[ -f '${logPath}' ] && echo yes || echo no", returnStdout: true).trim()
-              if (exists != 'yes') { sleep 3; return false }
-
-              def tail = sh(script: "tail -n 400 '${logPath}'", returnStdout: true)
-
-              if (tail.contains('.failed')) {
-                error "El despliegue de ${env.EAR_NAME} fallo. Revisa ${logPath}."
-              }
-
-              if (tail.contains("Deployed \"${env.EAR_NAME}\"") || tail.contains("WFLYSRV0010: Deployed \"${env.EAR_NAME}\"")) {
-                echo "EAR desplegado correctamente."
-                return true
-              }
-              sleep 5
-              return false
-            }
-          }
-        }
+        archiveArtifacts artifacts: 'dist/*.zip, dist/*.ear, dist/*.war, dist/*.jar', allowEmptyArchive: false
       }
     }
   }
 
   post {
     always {
-      sh 'ls -lh savia-ear/target || true'
-      archiveArtifacts artifacts: 'savia-ear/target/*.ear', allowEmptyArchive: true
-    }
-    failure {
-      sh 'tail -n 200 "${WILDFLY_HOME}/standalone/log/server.log" || true'
+      sh 'ls -lh dist || true'
     }
   }
 }
