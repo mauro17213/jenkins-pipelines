@@ -9,11 +9,10 @@ pipeline {
   options { timestamps() }
 
   environment {
-    // WildFly local en el agente Linux (ajusta si está en otra ruta)
+    // WildFly local en el agente Linux
     WILDFLY_HOME = "${WORKSPACE}/wildfly-19.1.0.Final"
-    BIND_ADDR    = '0.0.0.0'
     MGMT_HOST    = '127.0.0.1'
-    MGMT_PORT    = '9990'
+    MGMT_PORT    = '9990'     // puerto por defecto de management
 
     EAR_NAME     = 'savia-ear.ear'
     MAVEN_FLAGS  = '-B -U -DskipTests'
@@ -36,82 +35,108 @@ pipeline {
           if [ -z "$EAR" ]; then
             echo "? No se encontró .ear en savia-ear/target"; exit 1
           fi
-
-          # Normaliza el nombre del artefacto para usarlo como runtime-name
           cp -f "$EAR" "$WORKSPACE/savia-ear/target/$EAR_NAME"
           echo "? EAR listo: $EAR_NAME"
         '''
       }
     }
 
-    stage('Start WildFly') {
+    stage('Start WildFly (sin offset)') {
       steps {
         sh '''
           set -e
           chmod +x "$WILDFLY_HOME/bin/"*.sh || true
 
-          # Intenta apagar por si quedó algo
+          # Intenta apagar una instancia previa
           set +e
           "$WILDFLY_HOME/bin/jboss-cli.sh" --connect --commands=":shutdown" >/dev/null 2>&1
+          # Mata cualquier proceso de este WILDFLY_HOME
+          pgrep -f "jboss-modules.jar -mp $WILDFLY_HOME/modules" | xargs -r kill -9
           set -e
-          sleep 3
+          sleep 2
 
-          echo "?? Iniciando WildFly..."
-          nohup "$WILDFLY_HOME/bin/standalone.sh" -b ${BIND_ADDR} > "$WILDFLY_HOME/standalone/log/boot.out" 2>&1 &
+          echo "?? Iniciando WildFly en 0.0.0.0:8080 (mgmt 9990)..."
+          nohup "$WILDFLY_HOME/bin/standalone.sh" \
+            -b 0.0.0.0 \
+            -Djboss.bind.address.management=127.0.0.1 \
+            > "$WILDFLY_HOME/standalone/log/boot.out" 2>&1 &
 
-          echo "? Esperando a que el mgmt llegue a RUNNING..."
+          # Asegurar curl
+          if ! command -v curl >/dev/null 2>&1; then
+            if   command -v apt-get >/dev/null 2>&1; then sudo apt-get update && sudo apt-get install -y curl
+            elif command -v yum     >/dev/null 2>&1; then sudo yum install -y curl
+            elif command -v apk     >/dev/null 2>&1; then sudo apk add --no-cache curl
+            else echo "?? No pude instalar curl automáticamente"; fi
+          fi
+
+          echo "? Esperando management en ${MGMT_HOST}:${MGMT_PORT}..."
           for i in $(seq 1 60); do
-            STATE=$("$WILDFLY_HOME/bin/jboss-cli.sh" --connect --commands=":read-attribute(name=server-state)" 2>/dev/null | sed -n 's/.*result => \"\\(.*\\)\".*/\\1/p')
-            if [ "$STATE" = "running" ]; then
-              echo "? WildFly en estado RUNNING"; break
+            CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://${MGMT_HOST}:${MGMT_PORT}/management" || true)
+            # 200 o 401 significan que la interfaz HTTP de management ya está arriba
+            if [ "$CODE" = "200" ] || [ "$CODE" = "401" ]; then
+              echo "? Management arriba (HTTP $CODE)"; break
             fi
             sleep 2
-            if [ $i -eq 60 ]; then echo "? WildFly no llegó a RUNNING"; exit 1; fi
+            if [ $i -eq 60 ]; then
+              echo "? Management no respondió a tiempo en ${MGMT_HOST}:${MGMT_PORT}"
+              exit 1
+            fi
           done
         '''
       }
     }
 
-    stage('Deploy via CLI (sin dejar archivos)') {
+    stage('Deploy via File Scanner (sin dejar archivos)') {
       steps {
         sh '''
           set -e
-          EAR_PATH="$WORKSPACE/savia-ear/target/$EAR_NAME"
+          DEPLOY_DIR="$WILDFLY_HOME/standalone/deployments"
+          APP="$DEPLOY_DIR/$EAR_NAME"
+          LOG="$WILDFLY_HOME/standalone/log/server.log"
+          SRC="$WORKSPACE/savia-ear/target/$EAR_NAME"
 
-          echo "? Desplegando ${EAR_NAME} con CLI (managed deployment)..."
-          # --name / --runtime-name fijan el nombre lógico; --force hace redeploy si ya existe
-          "$WILDFLY_HOME/bin/jboss-cli.sh" --connect --commands="deploy \"$EAR_PATH\" --name=${EAR_NAME} --runtime-name=${EAR_NAME} --force"
+          echo "? Limpiando deployment previo..."
+          rm -f "$APP" "$APP.deployed" "$APP.failed" "$APP.undeployed" "$APP.dodeploy" || true
 
-          # Verifica que el deployment exista y esté habilitado
-          INFO=$("$WILDFLY_HOME/bin/jboss-cli.sh" --connect --commands="/deployment=${EAR_NAME}:read-resource(include-runtime=true)")
-          echo "$INFO" | grep -q 'enabled => true' || { echo "? Deployment no quedó enabled"; echo "$INFO"; exit 1; }
+          echo "? Copiando EAR al scanner..."
+          mkdir -p "$DEPLOY_DIR"
+          cp -f "$SRC" "$APP"
 
-          echo "? Eliminando artefacto local (no quedará en ninguna carpeta)"
-          rm -f "$EAR_PATH"
+          echo "? Marcando .dodeploy"
+          : > "$APP.dodeploy"
+
+          echo "? Esperando .deployed/.failed..."
+          for i in $(seq 1 90); do
+            if [ -f "$APP.deployed" ]; then
+              echo "? Deploy OK (.deployed)"
+              break
+            fi
+            if [ -f "$APP.failed" ]; then
+              echo "? Deploy FAILED (.failed). Últimas líneas:"
+              tail -n 200 "$LOG" || true
+              exit 1
+            fi
+            sleep 2
+            if [ $i -eq 90 ]; then
+              echo "? Timeout esperando el resultado del deploy"
+              tail -n 200 "$LOG" || true
+              exit 1
+            fi
+          done
+
+          echo "? Borrando el EAR y el marker para no dejar archivos..."
+          rm -f "$APP" "$APP.deployed" || true
         '''
       }
     }
 
     stage('Verificar en server.log') {
       steps {
-        script {
-          def logPath = "${env.WILDFLY_HOME}/standalone/log/server.log"
-          timeout(time: 120, unit: 'SECONDS') {
-            waitUntil {
-              def ok = sh(script: "grep -qE 'Deployed \\\"${env.EAR_NAME}\\\"|WFLYSRV0010: Deployed \\\"${env.EAR_NAME}\\\"' '${logPath}' && echo yes || echo no", returnStdout: true).trim()
-              if (ok == 'yes') {
-                echo "? Despliegue OK según server.log"
-                return true
-              }
-              def fail = sh(script: "grep -q '.failed' '${logPath}' && echo yes || echo no", returnStdout: true).trim()
-              if (fail == 'yes') {
-                error "? El despliegue de ${env.EAR_NAME} falló. Revisa ${logPath}."
-              }
-              sleep 3
-              return false
-            }
-          }
-        }
+        sh '''
+          LOG="$WILDFLY_HOME/standalone/log/server.log"
+          echo "? Últimas líneas de server.log:"
+          tail -n 120 "$LOG" || true
+        '''
       }
     }
   }
