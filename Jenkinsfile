@@ -1,4 +1,3 @@
-funiona en linux 
 pipeline {
     agent { label 'Linux' }
 
@@ -33,7 +32,7 @@ pipeline {
                         def generatedEar = sh(script: "ls ${WORKSPACE}/savia-ear/target/*.ear | head -n 1", returnStdout: true).trim()
                         if (generatedEar) {
                             sh "mv ${generatedEar} ${WORKSPACE}/savia-ear/target/${EAR_NAME}"
-                            echo "? EAR renombrado a ${EAR_NAME}"
+                            echo '? EAR renombrado a ${EAR_NAME}'
                         } else {
                             error "No se encontró el EAR generado en target"
                         }
@@ -54,7 +53,7 @@ pipeline {
                         if [ -f "${WILDFLY_HOME}/standalone/tmp" ]; then
                             ${WILDFLY_HOME}/bin/jboss-cli.sh --connect command=:shutdown || true
                             sleep 5
-                            echo "? WildFly detenido."
+                            echo '? WildFly detenido.'
                         fi
                     """
                 }
@@ -69,7 +68,7 @@ pipeline {
                         sh "mkdir -p ${DEPLOYMENTS}"
                         sh "rm -rf ${DEPLOYMENTS}/*"
 
-                        echo "? Copiando EAR generado..."
+                        echo '? Copiando EAR generado...'
                         sh """
                             if [ -f "${WORKSPACE}/savia-ear/target/${EAR_NAME}" ]; then
                                 cp "${WORKSPACE}/savia-ear/target/${EAR_NAME}" "${DEPLOYMENTS}/"
@@ -90,7 +89,7 @@ pipeline {
             steps {
                 sh """
                     chmod +x ${WILDFLY_HOME}/bin/*.sh
-                    echo "? Scripts de WildFly marcados como ejecutables."
+                    echo '? Scripts de WildFly marcados como ejecutables.'
                 """
             }
         }
@@ -98,35 +97,34 @@ pipeline {
         stage('Start WildFly') {
             steps {
                 sh "nohup ${WILDFLY_HOME}/bin/standalone.sh -b 0.0.0.0 > /dev/null 2>&1 &"
-                echo "? WildFly iniciado."
+                echo '? WildFly iniciado.'
             }
         }
 
         stage('Verify Deployment') {
-    steps {
-        script {
-            def logPath = "${WILDFLY_HOME}/standalone/log/server.log"
+            steps {
+                script {
+                    def logPath = "${WILDFLY_HOME}/standalone/log/server.log"
 
-            timeout(time: 120, unit: 'SECONDS') { // aumenta timeout si WildFly es pesado
-                waitUntil {
-                    def exists = sh(script: "[ -f ${logPath} ] && echo 'yes' || echo 'no'", returnStdout: true).trim()
-                    if (exists == 'yes') {
-                        def logContent = sh(script: "tail -n 200 ${logPath}", returnStdout: true).trim()
-                        if (logContent.contains("Deployed \"${EAR_NAME}\"")) {
-                            echo "? EAR desplegado correctamente en WildFly."
-                            return true
-                        }
-                        if (logContent.contains(".failed")) {
-                            error "? El despliegue de ${EAR_NAME} falló. Revisa server.log."
+                    timeout(time: 120, unit: 'SECONDS') { // aumenta timeout si WildFly es pesado
+                        waitUntil {
+                            def exists = sh(script: "[ -f ${logPath} ] && echo 'yes' || echo 'no'", returnStdout: true).trim()
+                            if (exists == 'yes') {
+                                def logContent = sh(script: "tail -n 200 ${logPath}", returnStdout: true).trim()
+                                if (logContent.contains("Deployed \"${EAR_NAME}\"")) {
+                                    echo '? EAR desplegado correctamente en WildFly.'
+                                    return true
+                                }
+                                if (logContent.contains(".failed")) {
+                                    error "? El despliegue de ${EAR_NAME} falló. Revisa server.log."
+                                }
+                            }
+                            sleep 5 // espera 5 segundos antes de volver a comprobar
+                            return false
                         }
                     }
-                    sleep 5 // espera 5 segundos antes de volver a comprobar
-                    return false
                 }
             }
         }
-      }
-  }
-
     }
 }
