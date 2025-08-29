@@ -74,3 +74,94 @@ pipeline {
           sh """
             mkdir -p "${WORKSPACE}/dist"
             cp -f "${earPath}" "${WORKSPACE}/dist/${EAR_NAME}"
+            cp -f "${warPath}" "${WORKSPACE}/dist/${WEB_NAME}"
+          """
+        }
+      }
+    }
+
+    stage('Stop WildFly (si está corriendo)') {
+      steps {
+        sh """
+          set +e
+          "${WILDFLY_HOME}/bin/jboss-cli.sh" --connect command=:shutdown
+          sleep 5
+          set -e
+          echo '? WildFly detenido (o no estaba corriendo).'
+        """
+      }
+    }
+
+    stage('Deploy EAR y WAR') {
+      steps {
+        sh """
+          echo '? Limpiando despliegues previos...'
+          mkdir -p "${DEPLOYMENTS}"
+          rm -f "${DEPLOYMENTS}"/*.failed "${DEPLOYMENTS}"/*.undeployed || true
+          rm -f "${DEPLOYMENTS}/${EAR_NAME}" "${DEPLOYMENTS}/${WEB_NAME}" || true
+
+          echo '? Copiando artefactos...'
+          cp -f "${WORKSPACE}/dist/${EAR_NAME}" "${DEPLOYMENTS}/${EAR_NAME}"
+          cp -f "${WORKSPACE}/dist/${WEB_NAME}" "${DEPLOYMENTS}/${WEB_NAME}"
+
+          touch "${DEPLOYMENTS}/${EAR_NAME}.dodeploy" || true
+          touch "${DEPLOYMENTS}/${WEB_NAME}.dodeploy" || true
+        """
+      }
+    }
+
+    stage('Start WildFly') {
+      steps {
+        sh """
+          chmod +x "${WILDFLY_HOME}/bin/"*.sh || true
+          nohup "${WILDFLY_HOME}/bin/standalone.sh" -b ${BIND_ADDR} > "${WILDFLY_HOME}/standalone/nohup.out" 2>&1 &
+          echo '? WildFly iniciándose en background...'
+          sleep 10
+        """
+      }
+    }
+
+    stage('Verificar despliegue') {
+      steps {
+        script {
+          def logPath = "${WILDFLY_HOME}/standalone/log/server.log"
+          timeout(time: 180, unit: 'SECONDS') {
+            waitUntil {
+              def exists = sh(script: "[ -f '${logPath}' ] && echo yes || echo no", returnStdout: true).trim()
+              if (exists != 'yes') { sleep 3; return false }
+
+              def tail = sh(script: "tail -n 800 '${logPath}'", returnStdout: true)
+
+              if (tail.contains('.failed')) {
+                error "? WildFly reporta .failed en deployments. Revisa ${logPath}."
+              }
+
+              def earOk = tail.contains("Deployed \"${EAR_NAME}\"") || tail.contains("WFLYSRV0010: Deployed \"${EAR_NAME}\"")
+              def webOk = tail.contains("Deployed \"${WEB_NAME}\"") || tail.contains("WFLYSRV0010: Deployed \"${WEB_NAME}\"")
+
+              if (earOk && webOk) {
+                echo '? Despliegue OK de EAR y WEB.'
+                return true
+              }
+              sleep 5
+              return false
+            }
+          }
+        }
+      }
+    }
+  }
+
+  post {
+    always {
+      echo '? Archivos generados:'
+      sh 'ls -lh savia-ear/target || true'
+      sh 'ls -lh savia-web/target || true'
+      archiveArtifacts artifacts: 'savia-ear/target/*.ear, savia-web/target/*.war, dist/*', allowEmptyArchive: true
+    }
+    failure {
+      echo '?? Últimas líneas del server.log para diagnosticar:'
+      sh 'tail -n 200 "${WILDFLY_HOME}/standalone/log/server.log" || true'
+    }
+  }
+}
