@@ -1,21 +1,16 @@
 version: "3.8"
+
 services:
   jenkins:
     image: jenkins/jenkins:lts
     container_name: jenkins
     ports:
-      - "3000:8080"
+      - "8080:8080"
+      - "50000:50000"
     volumes:
       - jenkins_home:/var/jenkins_home
-      - /var/run/docker.sock:/var/run/docker.sock
-      - /usr/bin/docker:/usr/bin/docker
-
-  wildfly:
-    image: jboss/wildfly:19.1.0.Final
-    container_name: wildfly
-    ports:
-      - "8080:8080"
-      - "9990:9990"
+      # Compartir la carpeta de deployments de WildFly en Windows
+      - /c/wildfly-19.1.0.Final/standalone/deployments:/deployments
 
 volumes:
   jenkins_home:
