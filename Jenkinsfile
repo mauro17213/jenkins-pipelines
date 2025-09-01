@@ -43,14 +43,7 @@ pipeline {
           set -e
           chmod +x "$WILDFLY_HOME/bin/"*.sh || true
 
-          # 1) 8080 debe estar libre
-          if ss -lnt "( sport = :8080 )" | grep -q 8080; then
-            echo "? El puerto 8080 ya está en uso. Libéralo o detén el proceso que lo ocupa:"
-            ss -lntp "( sport = :8080 )" || true
-            exit 1
-          fi
-
-          # 2) apaga cualquier WF previo y limpia
+          # 1) apaga cualquier WF previo y limpia
           set +e
           "$WILDFLY_HOME/bin/jboss-cli.sh" --connect --commands=":shutdown" >/dev/null 2>&1
           pgrep -f "jboss-modules.jar -mp $WILDFLY_HOME/modules" | xargs -r kill -9
@@ -63,14 +56,13 @@ pipeline {
             -Djboss.bind.address.management=127.0.0.1 \
             > "$WILDFLY_HOME/standalone/log/boot.out" 2>&1 &
 
-          # 3) espera a que suba: mgmt HTTP (200/401) o señales en server.log
+          # 2) espera a que suba: mgmt HTTP (200/401) o señales en server.log
           LOG="$WILDFLY_HOME/standalone/log/server.log"
           for i in $(seq 1 60); do
             CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://${MGMT_HOST}:${MGMT_PORT}/management" || true)
             if [ "$CODE" = "200" ] || [ "$CODE" = "401" ]; then
               echo "? Management arriba (HTTP $CODE)"; break
             fi
-            # fallback por log si la interfaz mgmt tarda
             if [ -f "$LOG" ] && grep -Eq "WFLYSRV0021: Http management interface|WFLYSRV0025:.* Undertow|WFLYSRV0010: Deployed" "$LOG"; then
               echo "? Servidor en marcha (detectado por log)"; break
             fi
@@ -119,13 +111,7 @@ pipeline {
     stage('Show App URL') {
       steps {
         sh '''
-          # Detecta una IP “accesible”: prioriza redes 172.16.x.x (VPN),
-          # si no, la primera IP no loopback.
-          PUB_IP=$(ip -4 -o addr show | awk '$4 ~ /^172\\.16\\./ {print $4}' | head -n1 | cut -d/ -f1)
-          [ -z "$PUB_IP" ] && PUB_IP=$(hostname -I | awk '{for(i=1;i<=NF;i++) if ($i!="127.0.0.1"){print $i; exit}}')
-
-          echo "? URL local:        http://127.0.0.1:8080/savia"
-          echo "? URL desde VPN:    http://${PUB_IP}:8080/savia"
+          echo "? URL local: http://127.0.0.1:8080/savia"
           echo "? Probar localmente (desde el agente):"
           curl -s -o /dev/null -w "HTTP %{http_code}\\n" "http://127.0.0.1:8080/"
         '''
