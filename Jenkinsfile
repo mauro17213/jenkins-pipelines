@@ -11,10 +11,11 @@ pipeline {
   environment {
     EAR_NAME    = 'savia-ear.ear'
     MAVEN_FLAGS = '-B -U -DskipTests'
+    WILDFLY_HOME = 'C:\\wildfly-19.1.0.Final'
+    DEPLOY_DIR   = 'C:\\wildfly-19.1.0.Final\\standalone\\deployments'
   }
 
   stages {
-
     stage('Checkout SCM') {
       agent { label 'Linux' }
       steps {
@@ -42,6 +43,17 @@ pipeline {
       }
     }
 
+    stage('Iniciar WildFly') {
+      agent { label 'Windows' }
+      steps {
+        bat '''
+          echo ? Iniciando WildFly...
+          start "" "%WILDFLY_HOME%\\bin\\standalone.bat" -c standalone.xml
+          ping 127.0.0.1 -n 15 >nul
+        '''
+      }
+    }
+
     stage('Deploy en Windows') {
       agent { label 'Windows' }
       steps {
@@ -50,7 +62,7 @@ pipeline {
           echo ? Deploy en Windows...
           set EAR_NAME=%EAR_NAME%
           set SRC=%WORKSPACE%\\savia-ear\\target\\%EAR_NAME%
-          set DEPLOY_DIR=C:\\wildfly-19.1.0.Final\\standalone\\deployments
+          set DEPLOY_DIR=%DEPLOY_DIR%
 
           echo ? Revisando si el EAR existe en %SRC%
           dir "%SRC%"
@@ -69,6 +81,16 @@ pipeline {
           type nul > "%DEPLOY_DIR%\\%EAR_NAME%.dodeploy"
 
           echo ? Deploy solicitado en WildFly
+        '''
+      }
+    }
+
+    stage('Detener WildFly') {
+      agent { label 'Windows' }
+      steps {
+        bat '''
+          echo ? Deteniendo WildFly...
+          "%WILDFLY_HOME%\\bin\\jboss-cli.bat" --connect command=:shutdown
         '''
       }
     }
