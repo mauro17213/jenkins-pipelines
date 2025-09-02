@@ -15,14 +15,14 @@ pipeline {
 
   stages {
     stage('Checkout SCM') {
-      agent { label 'linux' }
+      agent { label 'Linux' }
       steps {
         checkout scm
       }
     }
 
     stage('Build en Linux') {
-      agent { label 'linux' }
+      agent { label 'Linux' }
       steps {
         sh '''
           set -e
@@ -41,7 +41,7 @@ pipeline {
     }
 
     stage('Deploy en Windows') {
-      agent { label 'windows' }
+      agent { label 'Windows' }
       steps {
         bat '''
           echo ? Deploy en Windows...
