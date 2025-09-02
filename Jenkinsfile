@@ -1,11 +1,6 @@
 pipeline {
   agent none   // no usar un agente global, cada stage decide
 
-  tools {
-    maven 'Maven'
-    jdk   'jdk11'
-  }
-
   options { timestamps() }
 
   environment {
@@ -23,6 +18,10 @@ pipeline {
 
     stage('Build en Linux') {
       agent { label 'Linux' }
+      tools {
+        maven 'Maven'
+        jdk   'jdk11'
+      }
       steps {
         sh '''
           set -e
