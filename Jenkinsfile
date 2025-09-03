@@ -1,11 +1,14 @@
 pipeline {
   agent none
+
+  tools { maven 'Maven'; jdk 'jdk11' }
   options { timestamps() }
 
   environment {
-    EAR_NAME     = 'savia-ear.ear'
-    MAVEN_FLAGS  = '-B -U -DskipTests'
-    // Windows/WildFly
+    MAVEN_FLAGS = '-B -U -DskipTests'
+    EAR_NAME    = 'savia-ear.ear'
+
+    // Windows / WildFly
     WILDFLY_HOME = 'C:\\wildfly-19.1.0.Final'
     DEPLOY_DIR   = 'C:\\wildfly-19.1.0.Final\\standalone\\deployments'
     MGMT_HOST    = '127.0.0.1'
@@ -17,109 +20,122 @@ pipeline {
   }
 
   stages {
-    stage('Checkout SCM') {
-      agent { label 'Linux' } // primera mayúscula, como pediste
+    stage('Checkout (Linux)') {
+      agent { label 'Linux' }
       steps { checkout scm }
     }
 
     stage('Build en Linux (negocio/ejb/web/ear)') {
       agent { label 'Linux' }
-      tools {
-        maven 'Maven'
-        jdk   'jdk11'
-      }
       steps {
         sh '''
           set -e
           echo "[BUILD] Compilando módulos en Linux..."
-          mvn -f "$WORKSPACE/savia-negocio/pom.xml" clean install ${MAVEN_FLAGS}
-          mvn -f "$WORKSPACE/savia-ejb/pom.xml"     clean install ${MAVEN_FLAGS}
-          mvn -f "$WORKSPACE/savia-web/pom.xml"     clean install ${MAVEN_FLAGS}
-          mvn -f "$WORKSPACE/savia-ear/pom.xml"     clean package ${MAVEN_FLAGS}
+          mvn -f "$WORKSPACE/savia-negocio/pom.xml" clean install  ${MAVEN_FLAGS}
+          mvn -f "$WORKSPACE/savia-ejb/pom.xml"     clean install  ${MAVEN_FLAGS}
+          mvn -f "$WORKSPACE/savia-web/pom.xml"     clean install  ${MAVEN_FLAGS}
+          mvn -f "$WORKSPACE/savia-ear/pom.xml"     clean package  ${MAVEN_FLAGS}
 
-          EAR=$(ls "$WORKSPACE/savia-ear/target/"*.ear | head -n1 || true)
-          [ -z "$EAR" ] && { echo "[BUILD] ! No se encontró .ear en savia-ear/target"; exit 1; }
-          cp -f "$EAR" "$WORKSPACE/savia-ear/target/$EAR_NAME"
-          echo "[BUILD] EAR listo: $EAR_NAME"
+          EAR=$(ls "$WORKSPACE/savia-ear/target/"*.ear | head -n1)
+          cp -f "$EAR" "$WORKSPACE/savia-ear/target/${EAR_NAME}"
+          echo "[BUILD] EAR listo: ${EAR_NAME}"
 
-          # Solo stasheamos el EAR final con un nombre estable
-          find "$WORKSPACE/savia-ear/target" -maxdepth 1 -type f -name "$EAR_NAME" -printf "%f\n" > ear.list
+          # Deja solo el nombre final para stashear
+          find "$WORKSPACE/savia-ear/target" -maxdepth 1 -type f -name '*.ear' ! -name "${EAR_NAME}" -delete
         '''
-        stash name: 'ear', includes: 'savia-ear/target/savia-ear.ear'
+        stash name: 'EAR', includes: 'savia-ear/target/savia-ear.ear'
       }
     }
 
-    stage('Preparar artefacto en Windows') {
+    stage('Copiar EAR a deployments (Windows)') {
       agent { label 'Windows' }
-      tools {
-        maven 'Maven'
-        jdk   'jdk11'
-      }
       steps {
-        unstash 'ear'
+        checkout scm
+        unstash 'EAR'
         bat '''
         @echo on
+        setlocal
         if not exist "%DEPLOY_DIR%" mkdir "%DEPLOY_DIR%"
-        copy /Y "%WORKSPACE%\\savia-ear\\target\\savia-ear.ear" "%DEPLOY_DIR%\\%EAR_NAME%"
-        echo [ARTIFACT] Copiado a %DEPLOY_DIR%\\%EAR_NAME%
+
+        echo [DEPLOY] Limpiando markers previos...
+        del /f /q "%DEPLOY_DIR%\\%EAR_NAME%.deployed" "%DEPLOY_DIR%\\%EAR_NAME%.failed" "%DEPLOY_DIR%\\%EAR_NAME%.undeployed" "%DEPLOY_DIR%\\%EAR_NAME%.dodeploy" 2>nul
+
+        echo [DEPLOY] Copiando EAR al scanner...
+        copy /Y "%WORKSPACE%\\savia-ear\\target\\%EAR_NAME%" "%DEPLOY_DIR%\\%EAR_NAME%"
+        echo [OK] EAR en: %DEPLOY_DIR%\\%EAR_NAME%
         '''
       }
     }
 
-    stage('Start WildFly en Windows') {
+    stage('Start WildFly (Windows: start-if-stopped)') {
+      agent { label 'Windows' }
+      steps {
+        // Comprueba la interfaz de administración; si NO responde, arranca WildFly y espera a que responda.
+        bat '''
+        @echo on
+        setlocal
+        set MGMT_URL=http://%MGMT_HOST%:%MGMT_PORT%/management
+
+        echo [WF] Comprobando interfaz de administración %MGMT_URL% ...
+        powershell -NoProfile -Command ^
+          "$ok=$false; try { $r=Invoke-WebRequest -Uri $env:MGMT_URL -UseBasicParsing -TimeoutSec 3; if($r.StatusCode -in 200,401){ $ok=$true } } catch{}; if($ok){ exit 0 } else { exit 1 }"
+        if %ERRORLEVEL% EQU 0 (
+          echo [WF] WildFly YA responde por management. No se arranca de nuevo.
+          goto :done
+        )
+
+        echo [WF] WildFly no responde. Iniciando...
+        pushd "%WILDFLY_HOME%\\bin"
+        start "WILDFLY" /MIN standalone.bat -b 0.0.0.0 -Djboss.bind.address.management=%MGMT_HOST%
+        popd
+
+        echo [WF] Esperando a que management esté arriba (hasta 90s)...
+        powershell -NoProfile -Command ^
+          "$u='http://%MGMT_HOST%:%MGMT_PORT%/management'; for($i=1;$i -le 90;$i++){ try { $r=Invoke-WebRequest -Uri $u -UseBasicParsing -TimeoutSec 3; if($r.StatusCode -in 200,401){ Write-Host 'Management UP'; exit 0 } } catch{}; Start-Sleep -Seconds 1 }; exit 1"
+        if %ERRORLEVEL% NEQ 0 (
+          echo [WF][ERROR] No levantó management en el tiempo esperado.
+          powershell -NoProfile -Command "Get-Content -Path '%WILDFLY_HOME%\\standalone\\log\\server.log' -Tail 200"
+          exit /b 1
+        )
+        :done
+        '''
+      }
+    }
+
+    stage('Desplegar por scanner (Windows)') {
       agent { label 'Windows' }
       steps {
         bat '''
         @echo on
         setlocal
+        set "APP=%DEPLOY_DIR%\\%EAR_NAME%"
 
-        echo [WF] Verificando si el puerto %HTTP_PORT% esta en uso...
-        set PID=
-        for /f "tokens=2 delims==" %%a in ('powershell -NoProfile -Command ^
-          "$p = Get-NetTCPConnection -State Listen -LocalPort $env:HTTP_PORT -ErrorAction SilentlyContinue ^| Select-Object -First 1 -ExpandProperty OwningProcess; if($p){'PID=' + $p}"') do set PID=%%a
+        echo [DEPLOY] Creando marker .dodeploy...
+        type nul > "%APP%.dodeploy"
 
-        if defined PID (
-          echo [WF] Ya hay un proceso escuchando en %HTTP_PORT% (PID %PID%). Se asume WildFly iniciado.
-        ) else (
-          echo [WF] Iniciando WildFly en background...
-          pushd "%WILDFLY_HOME%\\bin"
-          start "WILDFLY" /MIN standalone.bat -b 0.0.0.0 -Djboss.bind.address.management=%MGMT_HOST% -Djboss.http.port=%HTTP_PORT%
-          popd
-        )
+        echo [DEPLOY] Esperando .deployed / .failed ...
+        set /a COUNT=0
+        :waitloop
+        if exist "%APP%.deployed" goto deployed
+        if exist "%APP%.failed"  goto failed
+        timeout /t 2 >nul
+        set /a COUNT+=1
+        if %COUNT% GEQ 120 goto timeout
+        goto waitloop
 
-        echo [WF] Esperando gestion (%MGMT_HOST%:%MGMT_PORT%)...
-        powershell -NoProfile -Command ^
-          "$u='http://%MGMT_HOST%:%MGMT_PORT%/management'; 1..60 ^| ForEach-Object { ^
-             try { $r=Invoke-WebRequest -Uri $u -UseBasicParsing -TimeoutSec 3; ^
-                   if($r.StatusCode -in 200,401){ Write-Host 'Management UP'; exit 0 } } catch{}; ^
-             Start-Sleep -Seconds 2 }; exit 1"
-        '''
-      }
-    }
+        :deployed
+        echo [OK] Deploy completado (.deployed)
+        exit /b 0
 
-    stage('Deploy en Windows (CLI)') {
-      agent { label 'Windows' }
-      steps {
-        // Si tu consola de administración requiere usuario/clave,
-        // usa credenciales de Jenkins y pásalas con --user/--password
-        // (aquí mostramos el modo sin auth local).
-        bat '''
-        @echo on
-        set "EAR=%DEPLOY_DIR%\\%EAR_NAME%"
-        if not exist "%EAR%" (
-          echo [DEPLOY] ! No existe %EAR%
-          exit /b 1
-        )
+        :failed
+        echo [ERROR] Deploy FAILED (.failed). Últimas líneas del server.log:
+        powershell -NoProfile -Command "Get-Content -Path '%WILDFLY_HOME%\\standalone\\log\\server.log' -Tail 200"
+        exit /b 1
 
-        echo [DEPLOY] Desplegando por CLI: %EAR%
-        "%WILDFLY_HOME%\\bin\\jboss-cli.bat" --connect --controller=%MGMT_HOST%:%MGMT_PORT% --commands="deploy %EAR% --force"
-
-        if errorlevel 1 (
-          echo [DEPLOY] ! Error en deploy por CLI
-          exit /b 1
-        ) else (
-          echo [DEPLOY] OK
-        )
+        :timeout
+        echo [ERROR] Timeout esperando markers. Últimas líneas del server.log:
+        powershell -NoProfile -Command "Get-Content -Path '%WILDFLY_HOME%\\standalone\\log\\server.log' -Tail 200"
+        exit /b 1
         '''
       }
     }
@@ -128,32 +144,22 @@ pipeline {
       agent { label 'Windows' }
       steps {
         bat '''
-        @echo on
+        @echo off
         set "URL=http://%HTTP_HOST%:%HTTP_PORT%/%APP_CTX%/"
-        echo [TEST] Request a %URL%
-        powershell -NoProfile -Command "try{ $r=Invoke-WebRequest -Uri '%URL%' -UseBasicParsing -TimeoutSec 15; Write-Host ('[TEST] HTTP ' + $r.StatusCode); if($r.StatusCode -ge 400){ exit 1 } } catch { Write-Host '[TEST] Error accediendo a la URL'; exit 1 }"
+        echo [TEST] GET %URL%
+        powershell -NoProfile -Command ^
+          "try{ $r=Invoke-WebRequest -Uri $env:URL -UseBasicParsing -TimeoutSec 10; ^
+                Write-Host ('[TEST] HTTP ' + $r.StatusCode); if($r.StatusCode -ge 400){ exit 1 } } ^
+           catch { Write-Host '[TEST] Error accediendo a la URL'; exit 1 }"
 
-        if /I "%OPEN_BROWSER%"=="true" (
-          start "" "%URL%"
-        )
-        '''
-      }
-    }
-
-    stage('Tail server.log (Windows)') {
-      agent { label 'Windows' }
-      steps {
-        bat '''
-        @echo on
-        powershell -NoProfile -Command "Get-Content -Path '%WILDFLY_HOME%\\standalone\\log\\server.log' -Tail 120"
+        if /I "%OPEN_BROWSER%"=="true" start "" "%URL%"
         '''
       }
     }
   }
 
   post {
-    failure {
-      echo '? Pipeline falló. Revisa los logs anteriores (deploy y server.log).'
-    }
+    success { echo '? Compilado en Linux, WildFly arrancado si hacía falta y EAR desplegado en Windows (8080).' }
+    failure { echo '? Falló el proceso. Revisa los stages de Start/Deploy y el server.log.' }
   }
 }
