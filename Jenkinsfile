@@ -7,7 +7,7 @@ pipeline {
   environment {
     MAVEN_FLAGS = '-B -U -DskipTests'
     EAR_NAME    = 'savia-ear.ear'
-    ZIP_NAME    = 'savia-build.zip'
+    TAR_NAME    = 'savia-build.tar.gz'
 
     // WildFly en Linux
     WILDFLY_HOME = '/opt/wildfly-19.1.0.Final'
@@ -29,12 +29,12 @@ pipeline {
           EAR=$(ls "$WORKSPACE/savia-ear/target/"*.ear | head -n1)
           cp -f "$EAR" "$WORKSPACE/savia-ear/target/${EAR_NAME}"
 
-          echo "[BUILD] Generando ZIP..."
+          echo "[BUILD] Generando TAR..."
           cd "$WORKSPACE/savia-ear/target"
-          zip -r "${ZIP_NAME}" "${EAR_NAME}"
+          tar -czf "${TAR_NAME}" "${EAR_NAME}"
         '''
-        // Publicar ZIP en Jenkins
-        archiveArtifacts artifacts: 'savia-ear/target/savia-build.zip', fingerprint: true
+        // Publicar TAR en Jenkins
+        archiveArtifacts artifacts: 'savia-ear/target/savia-build.tar.gz', fingerprint: true
       }
     }
 
@@ -46,21 +46,21 @@ pipeline {
         echo "[DEPLOY] Limpiando carpeta de deployments..."
         rm -rf ${DEPLOY_DIR:?}/*
 
-        echo "[DEPLOY] Copiando ZIP a deployments..."
-        cp "$WORKSPACE/savia-ear/target/${ZIP_NAME}" "${DEPLOY_DIR}/${ZIP_NAME}"
+        echo "[DEPLOY] Copiando TAR a deployments..."
+        cp "$WORKSPACE/savia-ear/target/${TAR_NAME}" "${DEPLOY_DIR}/${TAR_NAME}"
 
-        echo "[DEPLOY] Descomprimiendo ZIP en deployments..."
-        unzip -o "${DEPLOY_DIR}/${ZIP_NAME}" -d "${DEPLOY_DIR}"
+        echo "[DEPLOY] Descomprimiendo TAR en deployments..."
+        tar -xzf "${DEPLOY_DIR}/${TAR_NAME}" -C "${DEPLOY_DIR}"
 
-        echo "[DEPLOY] Limpiando ZIP después de extraer..."
-        rm -f "${DEPLOY_DIR}/${ZIP_NAME}"
+        echo "[DEPLOY] Limpiando TAR después de extraer..."
+        rm -f "${DEPLOY_DIR}/${TAR_NAME}"
         '''
       }
     }
   }
 
   post {
-    success { echo "? Build compilado en Linux, empaquetado en ZIP, publicado en Jenkins y desplegado en WildFly (Linux)." }
+    success { echo "? Build compilado en Linux, empaquetado en TAR, publicado en Jenkins y desplegado en WildFly (Linux)." }
     failure { echo "? Falló el proceso. Revisa logs de compilación o despliegue." }
   }
 }
