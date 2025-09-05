@@ -9,9 +9,8 @@ pipeline {
     EAR_NAME    = 'savia-ear.ear'
     TAR_NAME    = 'savia-build.tar.gz'
 
-    // WildFly en Linux
-    WILDFLY_HOME = '/opt/wildfly-19.1.0.Final'
-    DEPLOY_DIR   = '/opt/wildfly-19.1.0.Final/standalone/deployments'
+    // Ruta montada desde Windows (compartida con Docker)
+    DEPLOY_DIR   = '/opt/deployments'
   }
 
   stages {
@@ -60,7 +59,7 @@ pipeline {
   }
 
   post {
-    success { echo "? Build compilado en Linux, empaquetado en TAR, publicado en Jenkins y desplegado en WildFly (Linux)." }
+    success { echo "? Build compilado en Linux, empaquetado en TAR, publicado en Jenkins y desplegado en WildFly (Windows, vía carpeta compartida)." }
     failure { echo "? Falló el proceso. Revisa logs de compilación o despliegue." }
   }
 }
