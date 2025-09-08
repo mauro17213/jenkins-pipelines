@@ -14,7 +14,7 @@ pipeline {
 
     stages {
         stage('Checkout & Build') {
-            agent { label 'Linux' }
+            agent { label 'Linux' } // Compilación en Linux
             steps {
                 sh '''
                     set -e
@@ -38,43 +38,34 @@ pipeline {
         }
 
         stage('Deploy & Start WildFly') {
-            agent { label 'Windows' }
-            steps {
-                unstash 'ear-tar'
+            node {
+                withEnv(['PATH+MAVEN=C:\\Program Files\\Apache\\maven\\bin']) {
 
-                script {
                     // Detener WildFly si está corriendo
                     bat """
                     echo [DEPLOY] Deteniendo WildFly si está corriendo...
-                    @echo off
-                    setlocal enabledelayedexpansion
-                    set found=0
-                    for /F "tokens=5" %%p in ('netstat -ano ^| findstr :${WF_MANAGEMENT_PORT}') do (
-                        set found=1
-                        echo [WILDFLY] Matando PID %%p...
-                        taskkill /F /PID %%p >nul 2>&1 || echo "No se pudo matar PID %%p"
-                    )
-                    if !found! EQU 0 echo "No había procesos en el puerto ${WF_MANAGEMENT_PORT}"
-                    endlocal
+                    netstat -ano | findstr ${WF_MANAGEMENT_PORT} >nul && (
+                        for /f "tokens=5" %%a in ('netstat -ano ^| findstr ${WF_MANAGEMENT_PORT}') do taskkill /PID %%a /F
+                    ) || echo "No había procesos en el puerto ${WF_MANAGEMENT_PORT}"
                     """
 
-                    // Limpiar carpeta deployments
+                    // Limpiar carpeta de deployments
                     bat """
                     echo [DEPLOY] Limpiando carpeta de deployments...
                     del /Q "${DEPLOY_DIR}\\*" 2>nul || echo "No había archivos"
                     """
 
-                    // Copiar TAR
+                    // Copiar TAR a deployments
                     bat """
                     echo [DEPLOY] Copiando TAR a deployments...
-                    copy /Y "%WORKSPACE%\\savia-ear\\target\\${TAR_NAME}" "${DEPLOY_DIR}\\${TAR_NAME}"
+                    copy /Y "C:\\Users\\stive\\Documents\\nodeWindosw\\workspace\\prueba\\savia-ear\\target\\savia-build.tar.gz" "${DEPLOY_DIR}\\savia-build.tar.gz"
                     """
 
                     // Descomprimir TAR
                     bat """
                     echo [DEPLOY] Descomprimiendo TAR en deployments...
-                    tar -xzf "${DEPLOY_DIR}\\${TAR_NAME}" -C "${DEPLOY_DIR}"
-                    del /Q "${DEPLOY_DIR}\\${TAR_NAME}"
+                    tar -xzf "${DEPLOY_DIR}\\savia-build.tar.gz" -C "${DEPLOY_DIR}"
+                    del /Q "${DEPLOY_DIR}\\savia-build.tar.gz"
                     """
 
                     // Iniciar WildFly en background
@@ -83,28 +74,21 @@ pipeline {
                     start "" /B "${WILDFLY_HOME_WIN}\\bin\\standalone.bat" -b 0.0.0.0 -bmanagement 0.0.0.0
                     """
 
-                   // Esperar a que WildFly esté listo
-timeout(time: 5, unit: 'MINUTES') {
-    waitUntil {
-        powershell(
-            script: """
-            try {
-                \$c = New-Object Net.Sockets.TcpClient('localhost', ${WF_MANAGEMENT_PORT})
-                if (\$c.Connected) { \$c.Close(); exit 0 } else { exit 1 }
-            } catch {
-                exit 1
-            }
-            """,
-            returnStatus: true
-        ) == 0
-    }
-}
+                    // Esperar a que WildFly esté listo
+                    timeout(time: 5, unit: 'MINUTES') {
+                        waitUntil {
+                            powershell(returnStatus: true, script: """
+                            try {
+                                \$c = New-Object Net.Sockets.TcpClient('localhost', ${WF_MANAGEMENT_PORT})
+                                if (\$c.Connected) { \$c.Close(); exit 0 } else { exit 1 }
+                            } catch {
+                                exit 1
+                            }
+                            """) == 0
+                        }
+                    }
 
-                    // Forzar despliegue con .dodeploy
-                    bat """
-                    echo [DEPLOY] Forzando despliegue...
-                    copy /Y "${DEPLOY_DIR}\\${EAR_NAME}" "${DEPLOY_DIR}\\${EAR_NAME}.dodeploy" >nul
-                    """
+                    echo "[DEPLOY] WildFly listo y desplegado correctamente."
                 }
             }
         }
