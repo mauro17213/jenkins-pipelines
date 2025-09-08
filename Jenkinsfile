@@ -70,7 +70,7 @@ pipeline {
                     copy /Y "%WORKSPACE%\\savia-ear\\target\\${TAR_NAME}" "${DEPLOY_DIR}\\${TAR_NAME}"
                     """
 
-                    // Descomprimir TAR usando tar.exe (incluido en Git Bash o Windows 10+)
+                    // Descomprimir TAR
                     bat """
                     echo [DEPLOY] Descomprimiendo TAR en deployments...
                     tar -xzf "${DEPLOY_DIR}\\${TAR_NAME}" -C "${DEPLOY_DIR}"
@@ -97,7 +97,7 @@ pipeline {
                         ) == 0
                     }
 
-                    // Tocar archivo .dodeploy para que WildFly despliegue
+                    // Forzar despliegue con .dodeploy
                     bat """
                     echo [DEPLOY] Forzando despliegue...
                     copy /Y "${DEPLOY_DIR}\\${EAR_NAME}" "${DEPLOY_DIR}\\${EAR_NAME}.dodeploy" >nul
