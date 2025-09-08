@@ -83,18 +83,21 @@ pipeline {
                     start "" /B "${WILDFLY_HOME_WIN}\\bin\\standalone.bat" -b 0.0.0.0 -bmanagement 0.0.0.0
                     """
 
-                    // Esperar a que WildFly esté listo
-                    waitUntil {
-                        bat(
-                            script: """
-                            powershell -Command "
-                            try {
-                                \$c = New-Object Net.Sockets.TcpClient('localhost', ${WF_MANAGEMENT_PORT})
-                                if (\$c.Connected) { \$c.Close(); exit 0 } else { exit 1 }
-                            } catch { exit 1 }"
-                            """,
-                            returnStatus: true
-                        ) == 0
+                    // Esperar a que WildFly esté listo con timeout de 5 minutos
+                    timeout(time: 5, unit: 'MINUTES') {
+                        waitUntil {
+                            powershell(
+                                script: '''
+                                try {
+                                    $c = New-Object Net.Sockets.TcpClient('localhost', ${WF_MANAGEMENT_PORT})
+                                    if ($c.Connected) { $c.Close(); exit 0 } else { exit 1 }
+                                } catch {
+                                    exit 1
+                                }
+                                ''',
+                                returnStatus: true
+                            ) == 0
+                        }
                     }
 
                     // Forzar despliegue con .dodeploy
