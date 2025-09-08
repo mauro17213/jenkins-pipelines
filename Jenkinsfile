@@ -14,7 +14,7 @@ pipeline {
 
     stages {
         stage('Checkout & Build') {
-            agent { label 'linux' }
+            agent { label 'Linux' }
             steps {
                 sh '''
                     set -e
@@ -38,7 +38,7 @@ pipeline {
         }
 
         stage('Deploy & Start WildFly') {
-            agent { label 'windows' }
+            agent { label 'Windows' }
             steps {
                 unstash 'ear-tar'
 
