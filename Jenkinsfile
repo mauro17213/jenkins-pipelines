@@ -45,10 +45,27 @@ pipeline {
       agent { label 'windows' }
       steps {
         bat '''
-          echo [WILDFLY] Iniciando en Windows...
-          start "" "C:\\wildfly-19.1.0.Final\\bin\\standalone.bat" -b 0.0.0.0
-          echo [WILDFLY] Revisa logs en C:\\wildfly-19.1.0.Final\\standalone\\log\\server.log
+          echo [WILDFLY] Matando instancias previas...
+          taskkill /F /IM java.exe /T >nul 2>&1 || echo "No había instancias previas"
+
+          echo [WILDFLY] Iniciando standalone en background...
+          start /B "" "%WILDFLY_HOME_WIN%\\bin\\standalone.bat" -b 0.0.0.0 -bmanagement 0.0.0.0
+
+          echo [WILDFLY] Esperando que escuche en puerto 9990...
         '''
+        // Espera activa para asegurar que WildFly ya arrancó
+        timeout(time: 2, unit: 'MINUTES') {
+          waitUntil {
+            bat(script: '''
+              powershell -Command "
+                try {
+                  $c = New-Object Net.Sockets.TcpClient('localhost', 9990)
+                  if ($c.Connected) { $c.Close(); exit 0 } else { exit 1 }
+                } catch { exit 1 }
+              "
+            ''', returnStatus: true) == 0
+          }
+        }
       }
     }
 
@@ -76,7 +93,7 @@ pipeline {
   }
 
   post {
-    success { echo "? Build compilado y WildFly en Windows iniciado automáticamente." }
+    success { echo "? Build compilado y desplegado en WildFly (Opción 1)." }
     failure { echo "? Falló el proceso." }
   }
 }
