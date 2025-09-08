@@ -10,7 +10,6 @@ pipeline {
         DEPLOY_DIR       = 'C:\\deployments'
         WILDFLY_HOME_WIN = 'C:\\wildfly-19.1.0.Final'
         WF_MANAGEMENT_PORT = 9990
-        WILDFLY_LOG      = 'C:\\deployments\\wildfly.log'
     }
 
     stages {
@@ -25,10 +24,11 @@ pipeline {
                     mvn -f "$WORKSPACE/savia-web/pom.xml"     clean install ${MAVEN_FLAGS}
                     mvn -f "$WORKSPACE/savia-ear/pom.xml"     clean package ${MAVEN_FLAGS}
 
+                    # Copiar EAR con nombre fijo
                     EAR=$(ls "$WORKSPACE/savia-ear/target/"*.ear | head -n1)
                     cp -f "$EAR" "$WORKSPACE/savia-ear/target/${EAR_NAME}"
 
-                    echo "[BUILD] Generando TAR..."
+                    echo "[BUILD] Generando TAR.GZ..."
                     cd "$WORKSPACE/savia-ear/target"
                     tar -czf "${TAR_NAME}" "${EAR_NAME}"
                 '''
@@ -64,35 +64,27 @@ pipeline {
                     del /Q "${DEPLOY_DIR}\\*" 2>nul || echo "No había archivos"
                     """
 
-                    // Validar que el TAR existe
-                    bat """
-                    if not exist "%WORKSPACE%\\savia-ear\\target\\${TAR_NAME}" (
-                        echo "? TAR no encontrado, abortando..."
-                        exit /B 1
-                    )
-                    """
-
                     // Copiar TAR
                     bat """
                     echo [DEPLOY] Copiando TAR a deployments...
                     copy /Y "%WORKSPACE%\\savia-ear\\target\\${TAR_NAME}" "${DEPLOY_DIR}\\${TAR_NAME}"
                     """
 
-                    // Descomprimir TAR
+                    // Descomprimir TAR usando tar.exe (incluido en Git Bash o Windows 10+)
                     bat """
                     echo [DEPLOY] Descomprimiendo TAR en deployments...
-                    powershell -Command "Expand-Archive -Force '${DEPLOY_DIR}\\${TAR_NAME}' -DestinationPath '${DEPLOY_DIR}'"
+                    tar -xzf "${DEPLOY_DIR}\\${TAR_NAME}" -C "${DEPLOY_DIR}"
                     del /Q "${DEPLOY_DIR}\\${TAR_NAME}"
                     """
 
-                    // Iniciar WildFly en background con log
+                    // Iniciar WildFly en background
                     bat """
                     echo [WILDFLY] Iniciando standalone en background...
-                    start "" /B "${WILDFLY_HOME_WIN}\\bin\\standalone.bat" -b 0.0.0.0 -bmanagement 0.0.0.0 > "${WILDFLY_LOG}" 2>&1
+                    start "" /B "${WILDFLY_HOME_WIN}\\bin\\standalone.bat" -b 0.0.0.0 -bmanagement 0.0.0.0
                     """
 
-                    // Esperar a que WildFly esté listo (timeout 2 min)
-                    waitUntil(initialRecurrencePeriod: 5000, timeout: 120000) {
+                    // Esperar a que WildFly esté listo
+                    waitUntil {
                         bat(
                             script: """
                             powershell -Command "
@@ -117,6 +109,6 @@ pipeline {
 
     post {
         success { echo "? Build compilado y desplegado en WildFly, servidor levantado correctamente." }
-        failure { echo "? Falló el proceso. Revisa ${WILDFLY_LOG} para detalles." }
+        failure { echo "? Falló el proceso." }
     }
 }
