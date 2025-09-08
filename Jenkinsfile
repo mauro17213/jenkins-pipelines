@@ -84,7 +84,7 @@ pipeline {
                     """
 
                     // Esperar a que WildFly esté listo con timeout de 5 minutos
-                    timeout(time: 5, unit: 'MINUTES') {
+                    timeout(time: 3, unit: 'MINUTES') {
                         waitUntil {
                             powershell(
                                 script: '''
