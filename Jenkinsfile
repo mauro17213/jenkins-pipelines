@@ -1,4 +1,3 @@
-prueba 
 pipeline {
   agent { label 'Linux' }   // Solo corre en agentes Linux
 
