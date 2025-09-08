@@ -5,12 +5,12 @@ pipeline {
     options { timestamps() }
 
     environment {
-        MAVEN_FLAGS     = '-B -U -DskipTests'
-        EAR_NAME        = 'savia-ear.ear'
-        TAR_NAME        = 'savia-build.tar.gz'
-        DEPLOY_DIR      = '/opt/deployments'               // Carpeta compartida con Windows
-        WILDFLY_HOME_WIN = 'C:\\wildfly-19.1.0.Final'
-        WF_MANAGEMENT_PORT = '9990'                        // Puerto de administración para check
+        MAVEN_FLAGS       = '-B -U -DskipTests'
+        EAR_NAME          = 'savia-ear.ear'
+        TAR_NAME          = 'savia-build.tar.gz'
+        DEPLOY_DIR        = '/opt/deployments'               // Carpeta compartida con Windows
+        WILDFLY_HOME_WIN  = 'C:\\wildfly-19.1.0.Final'
+        WF_MANAGEMENT_PORT = '9990'                          // Puerto de administración para check
     }
 
     stages {
@@ -36,17 +36,25 @@ pipeline {
             }
         }
 
+        stage('Detener WildFly si está corriendo en Windows') {
+            agent { label 'windows' }
+            steps {
+                bat """
+                    echo [WILDFLY] Buscando PID de WildFly en puerto ${WF_MANAGEMENT_PORT}...
+                    for /f "tokens=5" %%p in ('netstat -ano ^| findstr :${WF_MANAGEMENT_PORT}') do (
+                        echo [WILDFLY] Matando PID %%p...
+                        taskkill /F /PID %%p
+                    )
+                """
+            }
+        }
+
         stage('Iniciar WildFly en Windows') {
             agent { label 'windows' }
             steps {
                 bat """
-                    echo [WILDFLY] Matando instancias previas...
-                    taskkill /F /IM java.exe /T >nul 2>&1 || echo "No había instancias previas"
-
                     echo [WILDFLY] Iniciando standalone en background...
-                    start /B "" "${WILDFLY_HOME_WIN}\\bin\\standalone.bat" -b 0.0.0.0 -bmanagement 0.0.0.0
-
-                    echo [WILDFLY] Esperando a que escuche en el puerto ${WF_MANAGEMENT_PORT}...
+                    start "" /B "${WILDFLY_HOME_WIN}\\bin\\standalone.bat" -b 0.0.0.0 -bmanagement 0.0.0.0
                 """
 
                 script {
@@ -89,7 +97,7 @@ pipeline {
     }
 
     post {
-        success { echo "? Build compilado y desplegado en WildFly (opción 1, standalone.bat en background)." }
+        success { echo "? Build compilado y desplegado en WildFly (WildFly corriendo en background)." }
         failure { echo "? Falló el proceso." }
     }
 }
