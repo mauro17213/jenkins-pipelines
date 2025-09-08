@@ -7,7 +7,7 @@ pipeline {
         MAVEN_FLAGS      = '-B -U -DskipTests'
         EAR_NAME         = 'savia-ear.ear'
         TAR_NAME         = 'savia-build.tar.gz'
-        DEPLOY_DIR       = 'C:\\deployments'            // Carpeta de despliegue en Windows
+        DEPLOY_DIR       = 'C:\\deployments'
         WILDFLY_HOME_WIN = 'C:\\wildfly-19.1.0.Final'
         WF_MANAGEMENT_PORT = 9990
     }
@@ -24,7 +24,6 @@ pipeline {
                     mvn -f "$WORKSPACE/savia-web/pom.xml"     clean install ${MAVEN_FLAGS}
                     mvn -f "$WORKSPACE/savia-ear/pom.xml"     clean package ${MAVEN_FLAGS}
 
-                    # Copiar EAR con nombre fijo
                     EAR=$(ls "$WORKSPACE/savia-ear/target/"*.ear | head -n1)
                     cp -f "$EAR" "$WORKSPACE/savia-ear/target/${EAR_NAME}"
 
@@ -46,9 +45,9 @@ pipeline {
                     // Detener WildFly si está corriendo
                     bat """
                     echo [DEPLOY] Deteniendo WildFly si está corriendo...
-                    for /F "tokens=5" %p in ('netstat -ano ^| findstr :${WF_MANAGEMENT_PORT}') do (
-                        echo [WILDFLY] Matando PID %p...
-                        taskkill /F /PID %p
+                    for /F "tokens=5" %%p in ('netstat -ano ^| findstr :${WF_MANAGEMENT_PORT}') do (
+                        echo [WILDFLY] Matando PID %%p...
+                        taskkill /F /PID %%p
                     )
                     """
 
@@ -79,7 +78,7 @@ pipeline {
 
                     // Esperar a que WildFly esté listo en puerto de management
                     waitUntil {
-                        return bat(
+                        bat(
                             script: """
                             powershell -Command "
                             try {
