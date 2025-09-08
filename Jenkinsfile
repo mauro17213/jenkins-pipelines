@@ -12,8 +12,8 @@ pipeline {
     // Ruta montada desde Windows (compartida con Docker o SMB)
     DEPLOY_DIR   = '/opt/deployments'
 
-    // Ruta a WildFly
-    WILDFLY_HOME = '/opt/wildfly' 
+    // Ruta a WildFly en Windows
+    WILDFLY_HOME_WIN = 'C:\\wildfly-19.1.0.Final'
     WF_HOST      = 'localhost'
     WF_PORT      = '9990'
   }
@@ -37,17 +37,17 @@ pipeline {
           cd "$WORKSPACE/savia-ear/target"
           tar -czf "${TAR_NAME}" "${EAR_NAME}"
         '''
-        // Publicar TAR en Jenkins
         archiveArtifacts artifacts: 'savia-ear/target/savia-build.tar.gz', fingerprint: true
       }
     }
 
-    stage('Iniciar WildFly') {
+    stage('Iniciar WildFly en Windows') {
+      agent { label 'windows' }
       steps {
-        sh '''
-          echo "[WILDFLY] Iniciando servidor..."
-          nohup ${WILDFLY_HOME}/bin/standalone.sh -b 0.0.0.0 > ${WILDFLY_HOME}/standalone/log/jenkins-boot.log 2>&1 &
-          echo "[WILDFLY] Servidor arrancado en background. Revisa ${WILDFLY_HOME}/standalone/log/server.log"
+        bat '''
+          echo [WILDFLY] Iniciando en Windows...
+          start "" "C:\\wildfly-19.1.0.Final\\bin\\standalone.bat" -b 0.0.0.0
+          echo [WILDFLY] Revisa logs en C:\\wildfly-19.1.0.Final\\standalone\\log\\server.log
         '''
       }
     }
@@ -73,25 +73,10 @@ pipeline {
         '''
       }
     }
-
-    stage('Deploy via jboss-cli (opcional)') {
-      when { expression { return fileExists("${env.WILDFLY_HOME}/bin/jboss-cli.sh") } }
-      steps {
-        withCredentials([usernamePassword(credentialsId: 'wildfly-admin', usernameVariable: 'WF_USER', passwordVariable: 'WF_PASS')]) {
-          sh '''
-            echo "[DEPLOY] Ejecutando jboss-cli..."
-            ${WILDFLY_HOME}/bin/jboss-cli.sh \
-              --connect --controller=${WF_HOST}:${WF_PORT} \
-              --user=${WF_USER} --password=${WF_PASS} \
-              --command="deploy ${DEPLOY_DIR}/${EAR_NAME} --force"
-          '''
-        }
-      }
-    }
   }
 
   post {
-    success { echo "? Build compilado" }
-    failure { echo "? Falló el proceso" }
+    success { echo "? Build compilado y WildFly en Windows iniciado automáticamente." }
+    failure { echo "? Falló el proceso." }
   }
 }
