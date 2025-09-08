@@ -38,75 +38,61 @@ pipeline {
         }
 
         stage('Deploy & Start WildFly') {
-            node {
-                withEnv(['PATH+MAVEN=C:\\Program Files\\Apache\\maven\\bin']) {
+    steps {
+        withEnv(['PATH+MAVEN=C:\\Program Files\\Apache\\maven\\bin']) {
 
-                    // Detener WildFly si está corriendo
-                    script {
-                        def stopStatus = bat(script: """
-                            echo [DEPLOY] Deteniendo WildFly si está corriendo...
-                            netstat -ano | findstr ${WF_MANAGEMENT_PORT} >nul && (
-                                for /f "tokens=5" %%a in ('netstat -ano ^| findstr ${WF_MANAGEMENT_PORT}') do taskkill /PID %%a /F
-                            ) || echo "No había procesos en el puerto ${WF_MANAGEMENT_PORT}"
-                        """, returnStatus: true)
-                        echo "[INFO] Código de salida stop WildFly: ${stopStatus}"
+            // Detener WildFly si está corriendo
+            bat """
+            echo [DEPLOY] Deteniendo WildFly si está corriendo...
+            netstat -ano | findstr ${WF_MANAGEMENT_PORT} >nul && (
+                for /f "tokens=5" %%a in ('netstat -ano ^| findstr ${WF_MANAGEMENT_PORT}') do taskkill /PID %%a /F
+            ) || echo "No había procesos en el puerto ${WF_MANAGEMENT_PORT}"
+            """
+
+            // Limpiar carpeta de deployments
+            bat """
+            echo [DEPLOY] Limpiando carpeta de deployments...
+            del /Q "${DEPLOY_DIR}\\*" 2>nul || echo "No había archivos"
+            """
+
+            // Copiar TAR a deployments
+            bat """
+            echo [DEPLOY] Copiando TAR a deployments...
+            copy /Y "C:\\Users\\stive\\Documents\\nodeWindosw\\workspace\\prueba\\savia-ear\\target\\savia-build.tar.gz" "${DEPLOY_DIR}\\savia-build.tar.gz"
+            """
+
+            // Descomprimir TAR
+            bat """
+            echo [DEPLOY] Descomprimiendo TAR en deployments...
+            tar -xzf "${DEPLOY_DIR}\\savia-build.tar.gz" -C "${DEPLOY_DIR}"
+            del /Q "${DEPLOY_DIR}\\savia-build.tar.gz"
+            """
+
+            // Iniciar WildFly en background
+            bat """
+            echo [WILDFLY] Iniciando standalone en background...
+            start "" /B "${WILDFLY_HOME_WIN}\\bin\\standalone.bat" -b 0.0.0.0 -bmanagement 0.0.0.0
+            """
+
+            // Esperar a que WildFly esté listo
+            timeout(time: 5, unit: 'MINUTES') {
+                waitUntil {
+                    powershell(returnStatus: true, script: """
+                    try {
+                        \$c = New-Object Net.Sockets.TcpClient('localhost', ${WF_MANAGEMENT_PORT})
+                        if (\$c.Connected) { \$c.Close(); exit 0 } else { exit 1 }
+                    } catch {
+                        exit 1
                     }
-
-                    // Limpiar carpeta de deployments
-                    script {
-                        def cleanStatus = bat(script: """
-                            echo [DEPLOY] Limpiando carpeta de deployments...
-                            del /Q "${DEPLOY_DIR}\\*" 2>nul || echo "No había archivos"
-                        """, returnStatus: true)
-                        echo "[INFO] Código de salida limpieza deployments: ${cleanStatus}"
-                    }
-
-                    // Copiar TAR a deployments
-                    script {
-                        def copyStatus = bat(script: """
-                            echo [DEPLOY] Copiando TAR a deployments...
-                            copy /Y "C:\\Users\\stive\\Documents\\nodeWindosw\\workspace\\prueba\\savia-ear\\target\\savia-build.tar.gz" "${DEPLOY_DIR}\\savia-build.tar.gz"
-                        """, returnStatus: true)
-                        echo "[INFO] Código de salida copy TAR: ${copyStatus}"
-                    }
-
-                    // Descomprimir TAR
-                    script {
-                        def extractStatus = bat(script: """
-                            echo [DEPLOY] Descomprimiendo TAR en deployments...
-                            tar -xzf "${DEPLOY_DIR}\\savia-build.tar.gz" -C "${DEPLOY_DIR}"
-                            del /Q "${DEPLOY_DIR}\\savia-build.tar.gz"
-                        """, returnStatus: true)
-                        echo "[INFO] Código de salida extracción TAR: ${extractStatus}"
-                    }
-
-                    // Iniciar WildFly en background
-                    script {
-                        def startStatus = bat(script: """
-                            echo [WILDFLY] Iniciando standalone en background...
-                            start "" /B "${WILDFLY_HOME_WIN}\\bin\\standalone.bat" -b 0.0.0.0 -bmanagement 0.0.0.0
-                        """, returnStatus: true)
-                        echo "[INFO] Código de salida start WildFly: ${startStatus}"
-                    }
-
-                    // Esperar a que WildFly esté listo
-                    timeout(time: 5, unit: 'MINUTES') {
-                        waitUntil {
-                            powershell(returnStatus: true, script: """
-                                try {
-                                    \$c = New-Object Net.Sockets.TcpClient('localhost', ${WF_MANAGEMENT_PORT})
-                                    if (\$c.Connected) { \$c.Close(); exit 0 } else { exit 1 }
-                                } catch {
-                                    exit 1
-                                }
-                            """) == 0
-                        }
-                    }
-
-                    echo "[DEPLOY] WildFly listo y desplegado correctamente."
+                    """) == 0
                 }
             }
+
+            echo "[DEPLOY] WildFly listo y desplegado correctamente."
         }
+    }
+}
+
     }
 
     post {
