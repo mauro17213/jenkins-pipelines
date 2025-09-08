@@ -11,33 +11,8 @@ pipeline {
         WILDFLY_HOME_WIN = 'C:\\wildfly-19.1.0.Final'
         WF_MANAGEMENT_PORT = 9990
     }
-
-    stages {
-        stage('Checkout & Build') {
-            agent { label 'Linux' } // Compilación en Linux
-            steps {
-                sh '''
-                    set -e
-                    echo "[BUILD] Compilando módulos..."
-                    mvn -f "$WORKSPACE/savia-negocio/pom.xml" clean install ${MAVEN_FLAGS}
-                    mvn -f "$WORKSPACE/savia-ejb/pom.xml"     clean install ${MAVEN_FLAGS}
-                    mvn -f "$WORKSPACE/savia-web/pom.xml"     clean install ${MAVEN_FLAGS}
-                    mvn -f "$WORKSPACE/savia-ear/pom.xml"     clean package ${MAVEN_FLAGS}
-
-                    # Copiar EAR con nombre fijo
-                    EAR=$(ls "$WORKSPACE/savia-ear/target/"*.ear | head -n1)
-                    cp -f "$EAR" "$WORKSPACE/savia-ear/target/${EAR_NAME}"
-
-                    echo "[BUILD] Generando TAR.GZ..."
-                    cd "$WORKSPACE/savia-ear/target"
-                    tar -czf "${TAR_NAME}" "${EAR_NAME}"
-                '''
-                stash includes: 'savia-ear/target/savia-build.tar.gz', name: 'ear-tar'
-                archiveArtifacts artifacts: 'savia-ear/target/savia-build.tar.gz', fingerprint: true
-            }
-        }
-
-        stage('Deploy & Start WildFly') {
+ 
+stage('Deploy & Start WildFly') {
     steps {
         withEnv(['PATH+MAVEN=C:\\Program Files\\Apache\\maven\\bin']) {
 
@@ -74,28 +49,31 @@ pipeline {
             start "" /B "${WILDFLY_HOME_WIN}\\bin\\standalone.bat" -b 0.0.0.0 -bmanagement 0.0.0.0
             """
 
-        // Esperar a que WildFly esté listo
-timeout(time: 5, unit: 'MINUTES') {
-    waitUntil {
-        script {
-            def status = powershell(returnStatus: true, script: """
-            try {
-                \$c = New-Object Net.Sockets.TcpClient('localhost', ${WF_MANAGEMENT_PORT})
-                if (\$c.Connected) { \$c.Close(); exit 0 } else { exit 1 }
-            } catch {
-                exit 1
-            }
-            """)
-            return (status == 0)
-        }
-    }
-}
-
+            // Esperar a que WildFly esté listo usando solo bat
+            bat """
+            echo [DEPLOY] Esperando a que WildFly esté listo en el puerto ${WF_MANAGEMENT_PORT}...
+            set /a count=0
+            :checkPort
+            for /f "tokens=5" %%a in ('netstat -ano ^| findstr ${WF_MANAGEMENT_PORT}') do (
+                echo [DEPLOY] WildFly está corriendo, PID=%%a
+                goto :ready
+            )
+            set /a count+=1
+            if %count% GEQ 60 (
+                echo [ERROR] WildFly no arrancó después de 5 minutos
+                exit /b 1
+            )
+            timeout /t 5 >nul
+            goto :checkPort
+            :ready
+            echo [DEPLOY] WildFly listo.
+            """
 
             echo "[DEPLOY] WildFly listo y desplegado correctamente."
         }
     }
 }
+
 
     }
 
