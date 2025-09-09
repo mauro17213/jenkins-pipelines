@@ -1,17 +1,14 @@
 pipeline {
-  agent { label 'Linux' }   // ? Solo corre en agentes Linux
-
+  agent { label 'Linux' }   // Solo corre en agentes Linux
   tools { maven 'Maven'; jdk 'jdk11' }
   options { timestamps() }
 
   environment {
     MAVEN_FLAGS = '-B -U -DskipTests'
-    EAR_NAME    = 'savia-ear.ear'
-    TAR_NAME    = 'savia-build.tar.gz'
-
-    // Ruta montada desde Windows (compartida con Docker/SMB). Debe apuntar al
-    // C:\wildfly-19.1.0.Final\standalone\deployments del servidor Windows
-    DEPLOY_DIR   = '/opt/deployments'
+    TAR_NAME    = 'savia-build.tar.gz'   // solo para descargar desde Jenkins
+    DEPLOY_DIR  = '/opt/deployments'     // carpeta de Windows montada en Linux
+    DIST_DIR    = 'dist'                 // donde guardo artefactos para descargar
+    WAIT_LOOPS  = '180'                  // 180*2s = 6 min esperando .deployed
   }
 
   stages {
@@ -19,66 +16,97 @@ pipeline {
       steps {
         checkout scm
         sh '''
-          set -e
-
+          set -euo pipefail
           echo "[BUILD] Compilando módulos..."
           mvn -f "$WORKSPACE/savia-negocio/pom.xml" clean install  ${MAVEN_FLAGS}
           mvn -f "$WORKSPACE/savia-ejb/pom.xml"     clean install  ${MAVEN_FLAGS}
-          mvn -f "$WORKSPACE/savia-web/pom.xml"     clean install  ${MAVEN_FLAGS}
+          mvn -f "$WORKSPACE/savia-web/pom.xml"     clean package  ${MAVEN_FLAGS}
           mvn -f "$WORKSPACE/savia-ear/pom.xml"     clean package  ${MAVEN_FLAGS}
 
-          # Copiar EAR con nombre fijo para empaquetar/publicar
+          echo "[BUILD] Detectando artefactos reales (con nombre de versión)..."
           EAR=$(ls "$WORKSPACE/savia-ear/target/"*.ear | head -n1)
-          cp -f "$EAR" "$WORKSPACE/savia-ear/target/${EAR_NAME}"
+          WAR=$(ls "$WORKSPACE/savia-web/target/"*.war | head -n1)
+          BASENAME_EAR=$(basename "$EAR")   # p.ej. savia-ear-1.0-SNAPSHOT.ear
+          BASENAME_WAR=$(basename "$WAR")   # p.ej. savia-web-1.0-SNAPSHOT.war
 
-          echo "[BUILD] Generando TAR con el EAR..."
-          cd "$WORKSPACE/savia-ear/target"
-          tar -czf "${TAR_NAME}" "${EAR_NAME}"
+          mkdir -p "$WORKSPACE/${DIST_DIR}"
+          # Copias para descarga (con nombres ORIGINALES, sin renombrar)
+          cp -f "$EAR" "$WORKSPACE/${DIST_DIR}/${BASENAME_EAR}"
+          cp -f "$WAR" "$WORKSPACE/${DIST_DIR}/${BASENAME_WAR}"
 
-          echo "[BUILD] Listo: $(pwd)"
-          ls -la
+          # Paquete tar.gz para descargar desde Jenkins (opcional)
+          (cd "$WORKSPACE/${DIST_DIR}" && tar -czf "${TAR_NAME}" "${BASENAME_EAR}" "${BASENAME_WAR}")
+
+          # Exporto nombres para la siguiente etapa
+          {
+            echo "BASENAME_EAR=${BASENAME_EAR}"
+            echo "BASENAME_WAR=${BASENAME_WAR}"
+          } > build.env
+
+          echo "[BUILD] Artefactos en ${DIST_DIR}:"
+          ls -la "$WORKSPACE/${DIST_DIR}"
         '''
-        // Publicar TAR en Jenkins para descarga
-        archiveArtifacts artifacts: 'savia-ear/target/savia-build.tar.gz', fingerprint: true
+        archiveArtifacts artifacts: "${env.DIST_DIR}/*", fingerprint: true
       }
     }
 
-    stage('Copiar a deployments (Windows)') {
+    stage('Copiar a deployments (exploded + .deployed)') {
       steps {
         sh '''
-          set -e
+          set -euo pipefail
+          source build.env
 
-          echo "[DEPLOY] Verificando carpeta de deployments montada: ${DEPLOY_DIR}"
+          echo "[DEPLOY] Verificando deployments montado: ${DEPLOY_DIR}"
           test -d "${DEPLOY_DIR}" || (echo "No existe ${DEPLOY_DIR}" && exit 1)
 
-          echo "[DEPLOY] Limpiando carpeta de deployments..."
-          rm -rf ${DEPLOY_DIR:?}/*
+          echo "[DEPLOY] Limpiando restos solo de esta app..."
+          rm -rf \
+            "${DEPLOY_DIR}/${BASENAME_EAR}" \
+            "${DEPLOY_DIR}/${BASENAME_EAR}.dodeploy" \
+            "${DEPLOY_DIR}/${BASENAME_EAR}.deployed" \
+            "${DEPLOY_DIR}/${BASENAME_EAR}.failed" \
+            "${DEPLOY_DIR}/${BASENAME_EAR}.isdeploying" \
+            "${DEPLOY_DIR}/${BASENAME_WAR}" \
+            "${DEPLOY_DIR}/${BASENAME_WAR}.dodeploy" \
+            "${DEPLOY_DIR}/${BASENAME_WAR}.deployed" \
+            "${DEPLOY_DIR}/${BASENAME_WAR}.failed" \
+            "${DEPLOY_DIR}/${BASENAME_WAR}.isdeploying" || true
 
-          echo "[DEPLOY] Copiando TAR a deployments..."
-          cp "$WORKSPACE/savia-ear/target/${TAR_NAME}" "${DEPLOY_DIR}/${TAR_NAME}"
+          echo "[DEPLOY] Copiando artefactos con su NOMBRE ORIGINAL..."
+          cp -f "${DIST_DIR}/${BASENAME_EAR}" "${DEPLOY_DIR}/${BASENAME_EAR}"
+          cp -f "${DIST_DIR}/${BASENAME_WAR}" "${DEPLOY_DIR}/${BASENAME_WAR}"
 
-          echo "[DEPLOY] Descomprimiendo TAR en deployments..."
-          tar -xzf "${DEPLOY_DIR}/${TAR_NAME}" -C "${DEPLOY_DIR}"
+          echo "[DEPLOY] Disparando el scanner con .dodeploy..."
+          : > "${DEPLOY_DIR}/${BASENAME_EAR}.dodeploy"
+          : > "${DEPLOY_DIR}/${BASENAME_WAR}.dodeploy"
 
-          echo "[DEPLOY] Eliminando TAR en deployments..."
-          rm -f "${DEPLOY_DIR}/${TAR_NAME}"
+          echo "[DEPLOY] Esperando a .deployed (o .failed)..."
+          for F in "${BASENAME_EAR}" "${BASENAME_WAR}"; do
+            i=0
+            until [ -e "${DEPLOY_DIR}/${F}.deployed" ] || [ -e "${DEPLOY_DIR}/${F}.failed" ]; do
+              sleep 2; i=$((i+1))
+              if [ $i -ge ${WAIT_LOOPS} ]; then echo "Timeout esperando a ${F}"; exit 1; fi
+            done
+            if [ -e "${DEPLOY_DIR}/${F}.failed" ]; then
+              echo "Fallo el despliegue de ${F}"; cat "${DEPLOY_DIR}/${F}.failed" || true; exit 1
+            fi
+            # Confirmar que se explotó a carpeta como en tu primera imagen
+            if [ -d "${DEPLOY_DIR}/${F}" ]; then
+              echo "OK: ${F} desplegado y EXPLOTADO a carpeta."
+            else
+              echo "ADVERTENCIA: ${F} desplegado pero NO explotado. Revisa que auto-extract=true."
+            fi
+          done
 
-          echo "[DEPLOY] Contenido final en ${DEPLOY_DIR}:"
+          echo "[DEPLOY] Contenido final:"
           ls -la "${DEPLOY_DIR}"
-
-          # ? Si quieres que WildFly lo tome automáticamente, descomenta:
-          # touch "${DEPLOY_DIR}/${EAR_NAME}.dodeploy"
         '''
       }
     }
   }
 
   post {
-    success {
-      echo "? Build compilado en Linux, empaquetado en TAR, publicado en Jenkins y copiado a la carpeta de Windows (${env.DEPLOY_DIR})."
-    }
-    failure {
-      echo "? Falló el proceso. Revisa la consola para detalles."
-    }
+    success { echo "? Compilado, empaquetado para descarga y pegado en deployments con nombres originales (como la primera imagen)." }
+    failure { echo "? Falló el proceso. Revisa consola y los .failed en ${env.DEPLOY_DIR}." }
   }
 }
