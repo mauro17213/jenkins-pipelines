@@ -1,15 +1,14 @@
 pipeline {
   agent { label 'Linux' }   // Solo corre en agentes Linux
-
   tools { maven 'Maven'; jdk 'jdk11' }
   options { timestamps() }
 
   environment {
     MAVEN_FLAGS = '-B -U -DskipTests'
-    TAR_NAME    = 'savia-build.tar.gz'  // para descargar desde Jenkins
-    DEPLOY_DIR  = '/opt/deployments'    // carpeta de Windows montada en Linux
-    DIST_DIR    = 'dist'                // artefactos para descarga
-    WAIT_LOOPS  = '180'                 // 180*2s = 6 min esperando .deployed
+    TAR_NAME    = 'savia-build.tar.gz' // para descarga desde Jenkins
+    DEPLOY_DIR  = '/opt/deployments'   // carpeta de Windows montada en Linux
+    DIST_DIR    = 'dist'               // artefactos para descarga
+    WAIT_LOOPS  = '180'                // 180*2s = 6 min esperando .deployed
   }
 
   stages {
@@ -18,7 +17,7 @@ pipeline {
         checkout scm
         sh '''
           #!/bin/sh
-          set -eu                             # (sin pipefail porque /bin/sh no lo soporta)
+          set -eu
 
           echo "[BUILD] Compilando módulos..."
           mvn -f "$WORKSPACE/savia-negocio/pom.xml" clean install  ${MAVEN_FLAGS}
@@ -29,29 +28,22 @@ pipeline {
           echo "[BUILD] Detectando artefactos con nombre de versión..."
           EAR=$(ls "$WORKSPACE/savia-ear/target/"*.ear | head -n1)
           WAR=$(ls "$WORKSPACE/savia-web/target/"*.war | head -n1)
-          BASENAME_EAR=$(basename "$EAR")   # p.ej. savia-ear-1.0-SNAPSHOT.ear
-          BASENAME_WAR=$(basename "$WAR")   # p.ej. savia-web-1.0-SNAPSHOT.war
 
           mkdir -p "$WORKSPACE/${DIST_DIR}"
-          # Copias para descarga (mantener nombres ORIGINALES)
-          cp -f "$EAR" "$WORKSPACE/${DIST_DIR}/${BASENAME_EAR}"
-          cp -f "$WAR" "$WORKSPACE/${DIST_DIR}/${BASENAME_WAR}"
+          cp -f "$EAR" "$WORKSPACE/${DIST_DIR}/$(basename "$EAR")"
+          cp -f "$WAR" "$WORKSPACE/${DIST_DIR}/$(basename "$WAR")"
 
-          # Paquete tar.gz opcional para descargar
-          (
-            cd "$WORKSPACE/${DIST_DIR}" && tar -czf "${TAR_NAME}" "${BASENAME_EAR}" "${BASENAME_WAR}"
-          ) || true
-
-          # Exportar nombres a variables de entorno (Jenkins las inyecta en el siguiente step)
-          echo "BASENAME_EAR=${BASENAME_EAR}" >  build.env
-          echo "BASENAME_WAR=${BASENAME_WAR}" >> build.env
+          # Tar opcional para descargar
+          (cd "$WORKSPACE/${DIST_DIR}" && tar -czf "${TAR_NAME}" "$(basename "$EAR")" "$(basename "$WAR")") || true
         '''
-        script {
-          def p = readProperties file: 'build.env'
-          env.BASENAME_EAR = p['BASENAME_EAR']
-          env.BASENAME_WAR = p['BASENAME_WAR']
-        }
+        // Publica todo para descargar
         archiveArtifacts artifacts: "${env.DIST_DIR}/*", fingerprint: true
+
+        // Descubre nombres SIN usar readProperties
+        script {
+          env.BASENAME_EAR = sh(script: 'basename $(ls savia-ear/target/*.ear | head -n1)', returnStdout: true).trim()
+          env.BASENAME_WAR = sh(script: 'basename $(ls savia-web/target/*.war | head -n1)', returnStdout: true).trim()
+        }
       }
     }
 
@@ -90,7 +82,7 @@ pipeline {
             i=0
             while [ ! -e "${DEPLOY_DIR}/${F}.deployed" ] && [ ! -e "${DEPLOY_DIR}/${F}.failed" ]; do
               sleep 2; i=$((i+1))
-              if [ "$i" -ge "${WAIT_LOOPS}" ]; then echo "Timeout esperando a ${F}"; exit 1; fi
+              [ "$i" -lt "${WAIT_LOOPS}" ] || { echo "Timeout esperando a ${F}"; exit 1; }
             done
             if [ -e "${DEPLOY_DIR}/${F}.failed" ]; then
               echo "Fallo el despliegue de ${F}"; cat "${DEPLOY_DIR}/${F}.failed" || true; exit 1
@@ -98,7 +90,7 @@ pipeline {
             if [ -d "${DEPLOY_DIR}/${F}" ]; then
               echo "OK: ${F} desplegado y EXPLOTADO a carpeta."
             else
-              echo "ADVERTENCIA: ${F} desplegado pero NO explotado (revisa auto-extract=true)."
+              echo "ADVERTENCIA: ${F} desplegado pero NO explotado (revisa auto-extract=true en el scanner)."
             fi
           done
 
