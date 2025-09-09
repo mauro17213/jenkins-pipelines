@@ -1,108 +1,150 @@
 pipeline {
-  agent { label 'Linux' }   // Solo corre en agentes Linux
-  tools { maven 'Maven'; jdk 'jdk11' }
+  agent none
   options { timestamps() }
 
   environment {
     MAVEN_FLAGS = '-B -U -DskipTests'
-    TAR_NAME    = 'savia-build.tar.gz' // para descarga desde Jenkins
-    DEPLOY_DIR  = '/opt/deployments'   // carpeta de Windows montada en Linux
-    DIST_DIR    = 'dist'               // artefactos para descarga
-    WAIT_LOOPS  = '180'                // 180*2s = 6 min esperando .deployed
+    DIST_DIR    = 'dist'
+    TAR_NAME    = 'savia-build.tar.gz'
+    WAIT_LOOPS  = '180'   // 180 * 2s = 6 min de espera a .deployed
   }
 
   stages {
-    stage('Checkout & Build') {
+    // ------------------ BUILD EN LINUX ------------------
+    stage('Build (Linux)') {
+      agent { label 'Linux' }
+      tools { maven 'Maven'; jdk 'jdk11' }
       steps {
         checkout scm
         sh '''
           #!/bin/sh
           set -eu
-
           echo "[BUILD] Compilando módulos..."
           mvn -f "$WORKSPACE/savia-negocio/pom.xml" clean install  ${MAVEN_FLAGS}
           mvn -f "$WORKSPACE/savia-ejb/pom.xml"     clean install  ${MAVEN_FLAGS}
           mvn -f "$WORKSPACE/savia-web/pom.xml"     clean package  ${MAVEN_FLAGS}
           mvn -f "$WORKSPACE/savia-ear/pom.xml"     clean package  ${MAVEN_FLAGS}
 
-          echo "[BUILD] Detectando artefactos con nombre de versión..."
+          echo "[BUILD] Detectando artefactos..."
           EAR=$(ls "$WORKSPACE/savia-ear/target/"*.ear | head -n1)
           WAR=$(ls "$WORKSPACE/savia-web/target/"*.war | head -n1)
 
           mkdir -p "$WORKSPACE/${DIST_DIR}"
           cp -f "$EAR" "$WORKSPACE/${DIST_DIR}/$(basename "$EAR")"
           cp -f "$WAR" "$WORKSPACE/${DIST_DIR}/$(basename "$WAR")"
-
-          # Tar opcional para descargar
           (cd "$WORKSPACE/${DIST_DIR}" && tar -czf "${TAR_NAME}" "$(basename "$EAR")" "$(basename "$WAR")") || true
-        '''
-        // Publica todo para descargar
-        archiveArtifacts artifacts: "${env.DIST_DIR}/*", fingerprint: true
 
-        // Descubre nombres SIN usar readProperties
-        script {
-          env.BASENAME_EAR = sh(script: 'basename $(ls savia-ear/target/*.ear | head -n1)', returnStdout: true).trim()
-          env.BASENAME_WAR = sh(script: 'basename $(ls savia-web/target/*.war | head -n1)', returnStdout: true).trim()
-        }
+          echo "[BUILD] Contenido de ${DIST_DIR}:"
+          ls -la "$WORKSPACE/${DIST_DIR}"
+        '''
+        archiveArtifacts artifacts: "${env.DIST_DIR}/*", fingerprint: true
+        stash name: 'dist', includes: "${env.DIST_DIR}/**"
       }
     }
 
-    stage('Copiar a deployments (exploded + .deployed)') {
+    // ------------------ ARRANCAR WILDFLY EN WINDOWS ------------------
+    stage('Start WildFly (Windows)') {
+      agent { label 'windows' }
+      environment {
+        WF_HOME       = 'C:\\wildfly-19.1.0.Final'
+        WF_DEPLOY_DIR = 'C:\\wildfly-19.1.0.Final\\standalone\\deployments'
+        WF_HOST       = '127.0.0.1'
+        WF_MGMT_PORT  = '9990'
+      }
       steps {
-        sh '''
-          #!/bin/sh
-          set -eu
+        powershell '''
+          $wfHome     = $env:WF_HOME
+          $mgmtPort   = [int]$env:WF_MGMT_PORT
+          $isUp = Test-NetConnection -ComputerName 127.0.0.1 -Port $mgmtPort -InformationLevel Quiet
 
-          echo "[DEPLOY] Verificando deployments montado: ${DEPLOY_DIR}"
-          [ -d "${DEPLOY_DIR}" ] || { echo "No existe ${DEPLOY_DIR}"; exit 1; }
+          if (-not $isUp) {
+            Write-Host "[WF] Iniciando WildFly..."
+            Start-Process -FilePath "$wfHome\\bin\\standalone.bat" `
+                          -ArgumentList "-b 0.0.0.0 -c standalone-full.xml" `
+                          -WindowStyle Hidden
 
-          echo "[DEPLOY] Limpiando restos de esta app..."
-          rm -rf \
-            "${DEPLOY_DIR}/${BASENAME_EAR}" \
-            "${DEPLOY_DIR}/${BASENAME_EAR}.dodeploy" \
-            "${DEPLOY_DIR}/${BASENAME_EAR}.deployed" \
-            "${DEPLOY_DIR}/${BASENAME_EAR}.failed" \
-            "${DEPLOY_DIR}/${BASENAME_EAR}.isdeploying" \
-            "${DEPLOY_DIR}/${BASENAME_WAR}" \
-            "${DEPLOY_DIR}/${BASENAME_WAR}.dodeploy" \
-            "${DEPLOY_DIR}/${BASENAME_WAR}.deployed" \
-            "${DEPLOY_DIR}/${BASENAME_WAR}.failed" \
-            "${DEPLOY_DIR}/${BASENAME_WAR}.isdeploying" 2>/dev/null || true
+            # Espera a que levante el puerto de management
+            $limit = 60
+            for ($i=0; $i -lt $limit; $i++) {
+              Start-Sleep -Seconds 2
+              if (Test-NetConnection -ComputerName 127.0.0.1 -Port $mgmtPort -InformationLevel Quiet) {
+                Write-Host "[WF] Arriba."
+                break
+              }
+            }
+            if (-not (Test-NetConnection -ComputerName 127.0.0.1 -Port $mgmtPort -InformationLevel Quiet)) {
+              throw "WildFly no levantó (puerto $mgmtPort)."
+            }
+          } else {
+            Write-Host "[WF] Ya está arriba."
+          }
+        '''
+      }
+    }
 
-          echo "[DEPLOY] Copiando artefactos con nombres ORIGINALES..."
-          cp -f "${DIST_DIR}/${BASENAME_EAR}" "${DEPLOY_DIR}/${BASENAME_EAR}"
-          cp -f "${DIST_DIR}/${BASENAME_WAR}" "${DEPLOY_DIR}/${BASENAME_WAR}"
+    // ------------------ DEPLOY + RUN EN WINDOWS ------------------
+    stage('Deploy & Run (Windows)') {
+      agent { label 'windows' }
+      environment {
+        WF_HOME       = 'C:\\wildfly-19.1.0.Final'
+        WF_DEPLOY_DIR = 'C:\\wildfly-19.1.0.Final\\standalone\\deployments'
+      }
+      steps {
+        unstash 'dist'
+        powershell '''
+          $deployDir = $env:WF_DEPLOY_DIR
+          $dist      = Join-Path $env:WORKSPACE 'dist'
+          $waitLoops = [int]$env:WAIT_LOOPS
 
-          echo "[DEPLOY] Disparando scanner con .dodeploy..."
-          : > "${DEPLOY_DIR}/${BASENAME_EAR}.dodeploy"
-          : > "${DEPLOY_DIR}/${BASENAME_WAR}.dodeploy"
+          if (-not (Test-Path $deployDir)) { throw "No existe $deployDir" }
 
-          echo "[DEPLOY] Esperando a .deployed (o .failed)..."
-          for F in "${BASENAME_EAR}" "${BASENAME_WAR}"; do
-            i=0
-            while [ ! -e "${DEPLOY_DIR}/${F}.deployed" ] && [ ! -e "${DEPLOY_DIR}/${F}.failed" ]; do
-              sleep 2; i=$((i+1))
-              [ "$i" -lt "${WAIT_LOOPS}" ] || { echo "Timeout esperando a ${F}"; exit 1; }
-            done
-            if [ -e "${DEPLOY_DIR}/${F}.failed" ]; then
-              echo "Fallo el despliegue de ${F}"; cat "${DEPLOY_DIR}/${F}.failed" || true; exit 1
-            fi
-            if [ -d "${DEPLOY_DIR}/${F}" ]; then
-              echo "OK: ${F} desplegado y EXPLOTADO a carpeta."
-            else
-              echo "ADVERTENCIA: ${F} desplegado pero NO explotado (revisa auto-extract=true en el scanner)."
-            fi
-          done
+          $ear = Get-ChildItem -Path $dist -Filter *.ear | Select-Object -First 1
+          $war = Get-ChildItem -Path $dist -Filter *.war | Select-Object -First 1
+          if (-not $ear) { throw "No se encontró EAR en $dist" }
+          if (-not $war) { throw "No se encontró WAR en $dist" }
 
-          echo "[DEPLOY] Contenido final en ${DEPLOY_DIR}:"
-          ls -la "${DEPLOY_DIR}"
+          # Limpia restos previos de esta app
+          Remove-Item -Force -Recurse -ErrorAction SilentlyContinue `
+            "$deployDir\\$($ear.Name)*","$deployDir\\$($war.Name)*"
+
+          Write-Host "[DEPLOY] Copiando artefactos..."
+          Copy-Item -Force $ear.FullName "$deployDir\\$($ear.Name)"
+          Copy-Item -Force $war.FullName "$deployDir\\$($war.Name)"
+
+          # Dispara el scanner (equivalente a Run)
+          New-Item -ItemType File -Path "$deployDir\\$($ear.Name).dodeploy" -Force | Out-Null
+          New-Item -ItemType File -Path "$deployDir\\$($war.Name).dodeploy" -Force | Out-Null
+
+          function Wait-Deployed([string]$name) {
+            $deadline = (Get-Date).AddSeconds($waitLoops * 2)
+            while (Get-Date -lt $deadline) {
+              if (Test-Path "$deployDir\\$name.deployed") { return }
+              if (Test-Path "$deployDir\\$name.failed") {
+                Write-Host "---- $name.failed ----"
+                Get-Content "$deployDir\\$name.failed" | Write-Host
+                throw "$name FAILED"
+              }
+              Start-Sleep -Seconds 2
+            }
+            throw "Timeout esperando $name"
+          }
+
+          Write-Host "[RUN] Esperando despliegues..."
+          Wait-Deployed $ear.Name
+          Wait-Deployed $war.Name
+
+          if (Test-Path "$deployDir\\$($ear.Name)") { Write-Host "OK: $($ear.Name) EXPLOTADO a carpeta." } else { Write-Host "ADVERTENCIA: $($ear.Name) no se explotó (auto-extract=true)." }
+          if (Test-Path "$deployDir\\$($war.Name)") { Write-Host "OK: $($war.Name) EXPLOTADO a carpeta." } else { Write-Host "ADVERTENCIA: $($war.Name) no se explotó (auto-extract=true)." }
+
+          Write-Host "[DEPLOY] Contenido final de deployments:"
+          Get-ChildItem $deployDir | Format-Table -AutoSize
         '''
       }
     }
   }
 
   post {
-    success { echo "? Compilado, artefactos publicados y pegados en deployments con nombre de versión (como tu primera imagen)." }
-    failure { echo "? Falló el proceso. Revisa la consola y los .failed en ${env.DEPLOY_DIR}." }
+    success { echo '? Build en Linux, luego start WildFly + deploy & RUN en Windows.' }
+    failure { echo "? Revisa la consola y los *.failed en el deployments de Windows." }
   }
 }
