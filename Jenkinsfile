@@ -41,10 +41,10 @@ pipeline {
         stash name: 'dist', includes: "${env.DIST_DIR}/**"
       }
     }
+  }
 
   post {
-    success { echo '? Build en Linux, luego start WildFly + deploy & RUN en Windows.' }
-    failure { echo "? Revisa la consola y los *.failed en el deployments de Windows." }
+    success { echo '? Build en Linux terminado. Luego: start WildFly + deploy & RUN en Windows.' }
+    failure { echo '? Revisa la consola y los *.failed en el deployments de Windows.' }
   }
-}
 }
