@@ -1,46 +1,52 @@
 pipeline {
-  agent { label 'Linux' }
+  agent { label 'Linux' }   // ? Solo corre en agentes Linux
+
+  tools { maven 'Maven'; jdk 'jdk11' }
   options { timestamps() }
 
   environment {
     MAVEN_FLAGS = '-B -U -DskipTests'
-    DIST_DIR    = 'dist'
-    ZIP_NAME    = 'savia-build.zip'
+    EAR_NAME    = 'savia-ear.ear'
+    TAR_NAME    = 'savia-build.tar.gz'
+
+    // Ruta montada desde Windows (compartida con Docker)
+    DEPLOY_DIR   = '/opt/deployments'
   }
 
   stages {
-    stage('Build y Empaquetado') {
-      tools { maven 'Maven'; jdk 'jdk11' }
+    stage('Checkout & Build') {
       steps {
-        checkout scm
         sh '''
-          #!/bin/sh
-          set -eu
+          set -e
           echo "[BUILD] Compilando módulos..."
+
           mvn -f "$WORKSPACE/savia-negocio/pom.xml" clean install  ${MAVEN_FLAGS}
           mvn -f "$WORKSPACE/savia-ejb/pom.xml"     clean install  ${MAVEN_FLAGS}
-          mvn -f "$WORKSPACE/savia-web/pom.xml"     clean package  ${MAVEN_FLAGS}
+          mvn -f "$WORKSPACE/savia-web/pom.xml"     clean install  ${MAVEN_FLAGS}
           mvn -f "$WORKSPACE/savia-ear/pom.xml"     clean package  ${MAVEN_FLAGS}
 
-          echo "[BUILD] Copiando todos los target/..."
-          mkdir -p "$WORKSPACE/${DIST_DIR}/artefactos"
-          cp -r "$WORKSPACE/savia-negocio/target" "$WORKSPACE/${DIST_DIR}/artefactos/savia-negocio-target"
-          cp -r "$WORKSPACE/savia-ejb/target"     "$WORKSPACE/${DIST_DIR}/artefactos/savia-ejb-target"
-          cp -r "$WORKSPACE/savia-web/target"     "$WORKSPACE/${DIST_DIR}/artefactos/savia-web-target"
-          cp -r "$WORKSPACE/savia-ear/target"     "$WORKSPACE/${DIST_DIR}/artefactos/savia-ear-target"
+          echo "[BUILD] Copiando artefactos compilados..."
+          mkdir -p "$WORKSPACE/dist"
 
-          echo "[BUILD] Generando ZIP con todos los target..."
-          cd "$WORKSPACE/${DIST_DIR}"
-          zip -r "${ZIP_NAME}" artefactos
+          cp "$WORKSPACE/savia-negocio/target/"*.jar "$WORKSPACE/dist/" || true
+          cp "$WORKSPACE/savia-ejb/target/"*.jar     "$WORKSPACE/dist/" || true
+          cp "$WORKSPACE/savia-web/target/"*.war     "$WORKSPACE/dist/" || true
+
+          EAR=$(ls "$WORKSPACE/savia-ear/target/"*.ear | head -n1)
+          cp -f "$EAR" "$WORKSPACE/dist/${EAR_NAME}"
+
+          echo "[BUILD] Generando TAR con todo compilado..."
+          cd "$WORKSPACE/dist"
+          tar -czf "${TAR_NAME}" *
         '''
-
-        archiveArtifacts artifacts: "${env.DIST_DIR}/${env.ZIP_NAME}", fingerprint: true
+        // Publicar TAR en Jenkins
+        archiveArtifacts artifacts: 'dist/savia-build.tar.gz', fingerprint: true
       }
     }
   }
 
   post {
-    success { echo '? Build en Linux terminado. ZIP con todos los target generado y disponible para descargar.' }
-    failure { echo '? Falló la compilación en Linux, revisa la consola.' }
+    success { echo "? Build compilado en Linux, empaquetado en TAR, publicado en Jenkins." }
+    failure { echo "? Falló el proceso. Revisa logs de compilación o despliegue." }
   }
 }
