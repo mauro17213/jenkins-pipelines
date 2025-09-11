@@ -1,5 +1,5 @@
 pipeline {
-  agent { label 'Linux' }   // ? Solo corre en agentes Linux
+  agent { label 'Linux' }   // Solo corre en agentes Linux
 
   tools { maven 'Maven'; jdk 'jdk11' }
   options { timestamps() }
@@ -7,10 +7,7 @@ pipeline {
   environment {
     MAVEN_FLAGS = '-B -U -DskipTests'
     EAR_NAME    = 'savia-ear.ear'
-    TAR_NAME    = 'savia-build.tar.gz'
-
-    // Ruta montada desde Windows (compartida con Docker)
-    DEPLOY_DIR   = '/opt/deployments'
+    ZIP_NAME    = 'savia-build.zip'
   }
 
   stages {
@@ -25,28 +22,34 @@ pipeline {
           mvn -f "$WORKSPACE/savia-web/pom.xml"     clean install  ${MAVEN_FLAGS}
           mvn -f "$WORKSPACE/savia-ear/pom.xml"     clean package  ${MAVEN_FLAGS}
 
-          echo "[BUILD] Copiando artefactos compilados..."
+          echo "[BUILD] Organizando artefactos en carpeta dist..."
+          rm -rf "$WORKSPACE/dist"
           mkdir -p "$WORKSPACE/dist"
 
-          cp "$WORKSPACE/savia-negocio/target/"*.jar "$WORKSPACE/dist/" || true
-          cp "$WORKSPACE/savia-ejb/target/"*.jar     "$WORKSPACE/dist/" || true
-          cp "$WORKSPACE/savia-web/target/"*.war     "$WORKSPACE/dist/" || true
+          mkdir -p "$WORKSPACE/dist/savia-negocio"
+          mkdir -p "$WORKSPACE/dist/savia-ejb"
+          mkdir -p "$WORKSPACE/dist/savia-web"
+          mkdir -p "$WORKSPACE/dist/savia-ear"
+
+          cp "$WORKSPACE/savia-negocio/target/"*.jar "$WORKSPACE/dist/savia-negocio/" || true
+          cp "$WORKSPACE/savia-ejb/target/"*.jar     "$WORKSPACE/dist/savia-ejb/" || true
+          cp "$WORKSPACE/savia-web/target/"*.war     "$WORKSPACE/dist/savia-web/" || true
 
           EAR=$(ls "$WORKSPACE/savia-ear/target/"*.ear | head -n1)
-          cp -f "$EAR" "$WORKSPACE/dist/${EAR_NAME}"
+          cp -f "$EAR" "$WORKSPACE/dist/savia-ear/${EAR_NAME}"
 
-          echo "[BUILD] Generando TAR con todo compilado..."
+          echo "[BUILD] Generando ZIP con la estructura completa..."
           cd "$WORKSPACE/dist"
-          tar -czf "${TAR_NAME}" *
+          zip -r "${ZIP_NAME}" *
         '''
-        // Publicar TAR en Jenkins
-        archiveArtifacts artifacts: 'dist/savia-build.tar.gz', fingerprint: true
+        // Publicar ZIP en Jenkins
+        archiveArtifacts artifacts: 'dist/savia-build.zip', fingerprint: true
       }
     }
   }
 
   post {
-    success { echo "? Build compilado en Linux, empaquetado en TAR, publicado en Jenkins." }
-    failure { echo "? Falló el proceso. Revisa logs de compilación o despliegue." }
+    success { echo "? Build compilado en Linux y empaquetado en ZIP con los 4 módulos." }
+    failure { echo "? Falló el proceso. Revisa logs de compilación o empaquetado." }
   }
 }
