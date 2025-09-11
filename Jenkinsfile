@@ -22,15 +22,14 @@ pipeline {
           mvn -f "$WORKSPACE/savia-web/pom.xml"     clean package  ${MAVEN_FLAGS}
           mvn -f "$WORKSPACE/savia-ear/pom.xml"     clean package  ${MAVEN_FLAGS}
 
-          echo "[BUILD] Detectando artefactos..."
-          EAR=$(ls "$WORKSPACE/savia-ear/target/"*.ear | head -n1)
-          WAR=$(ls "$WORKSPACE/savia-web/target/"*.war | head -n1)
-
+          echo "[BUILD] Copiando todos los target/..."
           mkdir -p "$WORKSPACE/${DIST_DIR}/artefactos"
-          cp -f "$EAR" "$WORKSPACE/${DIST_DIR}/artefactos/$(basename "$EAR")"
-          cp -f "$WAR" "$WORKSPACE/${DIST_DIR}/artefactos/$(basename "$WAR")"
+          cp -r "$WORKSPACE/savia-negocio/target" "$WORKSPACE/${DIST_DIR}/artefactos/savia-negocio-target"
+          cp -r "$WORKSPACE/savia-ejb/target"     "$WORKSPACE/${DIST_DIR}/artefactos/savia-ejb-target"
+          cp -r "$WORKSPACE/savia-web/target"     "$WORKSPACE/${DIST_DIR}/artefactos/savia-web-target"
+          cp -r "$WORKSPACE/savia-ear/target"     "$WORKSPACE/${DIST_DIR}/artefactos/savia-ear-target"
 
-          echo "[BUILD] Generando ZIP..."
+          echo "[BUILD] Generando ZIP con todos los target..."
           cd "$WORKSPACE/${DIST_DIR}"
           zip -r "${ZIP_NAME}" artefactos
         '''
@@ -41,7 +40,7 @@ pipeline {
   }
 
   post {
-    success { echo '? Build en Linux terminado. ZIP generado y disponible para descargar.' }
+    success { echo '? Build en Linux terminado. ZIP con todos los target generado y disponible para descargar.' }
     failure { echo '? Falló la compilación en Linux, revisa la consola.' }
   }
 }
