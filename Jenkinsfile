@@ -1,18 +1,15 @@
 pipeline {
-  agent none
+  agent { label 'Linux' }
   options { timestamps() }
 
   environment {
     MAVEN_FLAGS = '-B -U -DskipTests'
     DIST_DIR    = 'dist'
     ZIP_NAME    = 'savia-build.zip'
-    WAIT_LOOPS  = '180'   // 180 * 2s = 6 min de espera a .deployed
   }
 
   stages {
-    // ------------------ BUILD EN LINUX ------------------
-    stage('Build (Linux)') {
-      agent { label 'Linux' }
+    stage('Build y Empaquetado') {
       tools { maven 'Maven'; jdk 'jdk11' }
       steps {
         checkout scm
@@ -38,15 +35,13 @@ pipeline {
           zip -r "${ZIP_NAME}" artefactos
         '''
 
-        // Publica el ZIP en Jenkins para descarga
         archiveArtifacts artifacts: "${env.DIST_DIR}/${env.ZIP_NAME}", fingerprint: true
-        stash name: 'dist', includes: "${env.DIST_DIR}/**"
       }
     }
   }
 
   post {
-    success { echo '? Build en Linux terminado. ZIP generado y listo para descargar.' }
-    failure { echo '? Revisa la consola y los *.failed en el deployments de Windows.' }
+    success { echo '? Build en Linux terminado. ZIP generado y disponible para descargar.' }
+    failure { echo '? Falló la compilación en Linux, revisa la consola.' }
   }
 }
