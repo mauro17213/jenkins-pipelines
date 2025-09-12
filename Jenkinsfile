@@ -1,55 +1,50 @@
 pipeline {
-  agent { label 'Linux' }   // Solo corre en agentes Linux
-
-  tools { maven 'Maven'; jdk 'jdk11' }
+  agent none
   options { timestamps() }
 
   environment {
     MAVEN_FLAGS = '-B -U -DskipTests'
-    EAR_NAME    = 'savia-ear.ear'
-    ZIP_NAME    = 'savia-build.zip'
+    DIST_DIR    = 'dist'
+    TAR_NAME    = 'savia-build.tar.gz'
+    WAIT_LOOPS  = '180'   // 180 * 2s = 6 min de espera a .deployed
   }
 
   stages {
-    stage('Checkout & Build') {
+    // ------------------ BUILD EN LINUX ------------------
+    stage('Build (Linux)') {
+      agent { label 'Linux' }
+      tools { maven 'Maven'; jdk 'jdk11' }
       steps {
+        checkout scm
         sh '''
-          set -e
-          echo "[BUILD] Compilando módulos..."
-
+          #!/bin/sh
+          set -eu
+          echo "[BUILD] Compilando m?dulos..."
           mvn -f "$WORKSPACE/savia-negocio/pom.xml" clean install  ${MAVEN_FLAGS}
           mvn -f "$WORKSPACE/savia-ejb/pom.xml"     clean install  ${MAVEN_FLAGS}
-          mvn -f "$WORKSPACE/savia-web/pom.xml"     clean install  ${MAVEN_FLAGS}
+          mvn -f "$WORKSPACE/savia-web/pom.xml"     clean package  ${MAVEN_FLAGS}
           mvn -f "$WORKSPACE/savia-ear/pom.xml"     clean package  ${MAVEN_FLAGS}
 
-          echo "[BUILD] Organizando artefactos en carpeta dist..."
-          rm -rf "$WORKSPACE/dist"
-          mkdir -p "$WORKSPACE/dist"
-
-          mkdir -p "$WORKSPACE/dist/savia-negocio"
-          mkdir -p "$WORKSPACE/dist/savia-ejb"
-          mkdir -p "$WORKSPACE/dist/savia-web"
-          mkdir -p "$WORKSPACE/dist/savia-ear"
-
-          cp "$WORKSPACE/savia-negocio/target/"*.jar "$WORKSPACE/dist/savia-negocio/" || true
-          cp "$WORKSPACE/savia-ejb/target/"*.jar     "$WORKSPACE/dist/savia-ejb/" || true
-          cp "$WORKSPACE/savia-web/target/"*.war     "$WORKSPACE/dist/savia-web/" || true
-
+          echo "[BUILD] Detectando artefactos..."
           EAR=$(ls "$WORKSPACE/savia-ear/target/"*.ear | head -n1)
-          cp -f "$EAR" "$WORKSPACE/dist/savia-ear/${EAR_NAME}"
+          WAR=$(ls "$WORKSPACE/savia-web/target/"*.war | head -n1)
 
-          echo "[BUILD] Generando ZIP con la estructura completa..."
-          cd "$WORKSPACE/dist"
-          zip -r "${ZIP_NAME}" *
+          mkdir -p "$WORKSPACE/${DIST_DIR}"
+          cp -f "$EAR" "$WORKSPACE/${DIST_DIR}/$(basename "$EAR")"
+          cp -f "$WAR" "$WORKSPACE/${DIST_DIR}/$(basename "$WAR")"
+          (cd "$WORKSPACE/${DIST_DIR}" && tar -czf "${TAR_NAME}" "$(basename "$EAR")" "$(basename "$WAR")") || true
+
+          echo "[BUILD] Contenido de ${DIST_DIR}:"
+          ls -la "$WORKSPACE/${DIST_DIR}"
         '''
-        // Publicar ZIP en Jenkins
-        archiveArtifacts artifacts: 'dist/savia-build.zip', fingerprint: true
+        archiveArtifacts artifacts: "${env.DIST_DIR}/*", fingerprint: true
+        stash name: 'dist', includes: "${env.DIST_DIR}/**"
       }
     }
-  }
 
   post {
-    success { echo "? Build compilado en Linux y empaquetado en ZIP con los 4 módulos." }
-    failure { echo "? Falló el proceso. Revisa logs de compilación o empaquetado." }
+    success { echo '? Build en Linux, luego start WildFly + deploy & RUN en Windows.' }
+    failure { echo "? Revisa la consola y los *.failed en el deployments de Windows." }
   }
+}
 }
