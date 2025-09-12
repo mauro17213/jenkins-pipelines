@@ -9,6 +9,10 @@ pipeline {
     WAIT_LOOPS  = '180'   // 180 * 2s = 6 min de espera a .deployed
   }
 
+  triggers {
+    githubPush()   // ? Dispara el pipeline al recibir push desde GitHub webhook
+  }
+
   stages {
     stage('Build (Linux)') {
       agent { label 'Linux' }
