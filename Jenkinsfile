@@ -10,7 +10,6 @@ pipeline {
   }
 
   stages {
-    // ------------------ BUILD EN LINUX ------------------
     stage('Build (Linux)') {
       agent { label 'Linux' }
       tools { maven 'Maven'; jdk 'jdk11' }
@@ -19,7 +18,7 @@ pipeline {
         sh '''
           #!/bin/sh
           set -eu
-          echo "[BUILD] Compilando m?dulos..."
+          echo "[BUILD] Compilando módulos..."
           mvn -f "$WORKSPACE/savia-negocio/pom.xml" clean install  ${MAVEN_FLAGS}
           mvn -f "$WORKSPACE/savia-ejb/pom.xml"     clean install  ${MAVEN_FLAGS}
           mvn -f "$WORKSPACE/savia-web/pom.xml"     clean package  ${MAVEN_FLAGS}
@@ -41,10 +40,10 @@ pipeline {
         stash name: 'dist', includes: "${env.DIST_DIR}/**"
       }
     }
+  }
 
   post {
     success { echo '? Build en Linux, luego start WildFly + deploy & RUN en Windows.' }
     failure { echo "? Revisa la consola y los *.failed en el deployments de Windows." }
   }
-}
 }
