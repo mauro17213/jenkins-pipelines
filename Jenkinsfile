@@ -16,7 +16,7 @@ pipeline {
   stages {
     stage('Build (Linux)') {
       agent { label 'Linux' }
-      tools { maven 'Maven'; jdk 'jdk11' }
+      tools { maven 'Maven'; jdk 'jdk-11' }
       steps {
         checkout scm
         sh '''
